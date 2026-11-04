@@ -1,127 +1,110 @@
-"""
-እዚህ ፋይል ውስጥ ያሉትን እሴቶች ብቻ ይቀይሩ (ዋጋ፣ የባንክ አካውንት፣ የማስታወቂያ ጽሑፍ፣ የመጽሐፍ ፋይሎች)።
-ሌላ ፋይል መንካት አያስፈልግም።
-"""
+import os
 from pathlib import Path
 
 BASE = Path(__file__).parent
-
-# የቦቱ ስም (በእንኳን ደህና መጡ መልዕክት ላይ ይታያል)
 BOT_NAME = "Ethio Length"
 
-# ዋጋ (በብር)
 PRICES = {
-    "books": 397,    # ሁለቱም መጽሐፎች (PDF) ብቻ
-    "bundle": 597,   # ሁለቱም መጽሐፎች (PDF) + ቪዲዮ
+    "books": 397,        # መጽሐፍ ብቻ ግሩፕ/ቻናል
+    "bundle": 597,       # መጽሐፍ + ቪዲዮ ግሩፕ/ቻናል
+    "upgrade": 200,      # ወደ ቪዲዮ ግሩፕ ማሳደጊያ
+    "gift_books": 397,   # ስጦታ (መጽሐፍ ብቻ)
+    "gift_bundle": 597,  # ስጦታ (መጽሐፍ + ቪዲዮ)
 }
 
-# ደንበኛው ክፍያ የሚልክባቸው አካውንቶች
-PAYMENT_ACCOUNTS = """\
+REFERRAL_TARGET = 5
+BACKUP_INTERVAL_HOURS = 24
+FAST_BONUS_HOURS = 24
+GROUP_POST_HOURS = 8
+
+PAYMENT_ACCOUNTS = os.getenv("PAYMENT_ACCOUNTS", "").replace("\\n", "\n") or """\
 🏦 CBE: 1000658433605 (Fasika Bekele)
 📱 Telebirr: 0967507969 (Fasika Bekele)
 🏦 Abyssinia: 149004718 (Fasika Bekele)"""
 
-# ደንበኛው ከ"ወስኛለሁ" በኋላ የሚያየው የማስታወቂያ ጽሑፍ። {price} እና {accounts} በራስ-ሰር ይሞላሉ።
+TELEBIRR_PHONE = os.getenv("TELEBIRR_PHONE", "0967507969")
+CBE_ACCOUNT = os.getenv("CBE_ACCOUNT", "1000658433605")
+
 OFFER = {
     "am": """\
-ሰላም! 👋 ስለ መጽሐፎቻችን ፍላጎት ስላሳዩ ከልብ እናመሰግናለን! 🙏
-
-ቁመትዎን በተፈጥሯዊ መንገዶች መጨመር ይፈልጋሉ? እነዚህ መጽሐፍት ለእርስዎ የተዘጋጁ ናቸው!
+ሰላም! 👋 ቁመትዎን በተፈጥሯዊ መንገዶች መጨመር ይፈልጋሉ? እነዚህ መጽሐፍት እና የልምምድ ግሩፖች ለእርስዎ የተዘጋጁ ናቸው!
 
 በውስጣቸው ምን ይዘዋል?
-🏋️‍♂️ 1. ልምምድ (Exercise): ትክክለኛ ጫና በመፍጠር አጥንትን የማሳደግ ጥበብ።
-🥗 2. አመጋገብ (Diet): ኪስ በማይጎዳ መልኩ ለሰውነት ግንባታ የሚረዱ ምግቦች።
-😴 3. እረፍት (Rest): እንቅልፍ ለቁመት እድገት የሚጫወተው ቁልፍ ሚና።
+🏋️‍♂️ 1. ልምምድ (Exercise): አጥንትንና አከርካሪን የማሳደግ ጥበብ።
+🥗 2. አመጋገብ (Diet): ለሰውነት ግንባታ የሚረዱ ምግቦች።
+😴 3. እረፍት (Rest): እንቅልፍ ለቁመት እድገት የሚጫወተው ሚና።
+🔥 4. ልዩ የልምምድ ግሩፕ: በየቀኑ ክትትል እና ማበረታቻ የሚያገኙበት!
 
-የመጽሐፍቱ ዝርዝር፦
-📕 "6 foot 6" - 37 ገጾች፣ በ2 ዋና ዋና ምዕራፎች የተከፈለ።
-📗 "5 inches" - 69 ገጾች፣ በ14 ምዕራፎች በሰፊው የቀረበ።
-
-📢 መልካም ዜና! መጽሐፎቹ በ English፣ በአማርኛ (Amharic) እና በኦሮምኛ (Afaan Oromoo) ተዘጋጅተው ቀርበዋል! በመረጡት ቋንቋ ያገኛሉ።
+📕 "6 foot 6" (37 ገጾች) + 📗 "5 inches" (69 ገጾች)
+📢 በ English፣ በአማርኛ እና በ Afaan Oromoo ተዘጋጅተዋል!
 
 💳 ክፍያ እና አረካከብ፦
+📘 መጽሐፎች ብቻ (Private Group)፦ {price} ብር
+📘🎬 መጽሐፎች + ቪዲዮ (VIP Group)፦ {price_bundle} ብር
 
-📘 መጽሐፎች (PDF) ብቻ፦ {price} ብር
-📘🎬 መጽሐፎች (PDF) + ቪዲዮ፦ {price_bundle} ብር
-(መጽሐፎቹ ዲጂታል /Soft Copy/ ስለሆኑ ክፍያ እንደፈጸሙ በዚሁ በቴሌግራም ይደርስዎታል።)
-
-በሚከተሉት አማራጮች ክፍያውን መፈጸም ይችላሉ፦
-{accounts}
-
-📌 ማሳሰቢያ፦ ክፍያውን እንደፈጸሙ የደረሰኙን ፎቶ (Screenshot) እዚሁ ይላኩልን፤ መጽሐፎቹን እንልክልዎታለን! 🚀""",
+👇 ከታች ጥቅል ይምረጡ፤ ክፍያ እንደፈጸሙ ወደ ትክክለኛው Private ግሩፕ የሚገቡበት ሊንክ ይደርስዎታል።""",
     "en": """\
-Hello! 👋 Thank you for your interest in our books! 🙏
+Hello! 👋 Do you want to increase your height naturally?
 
-Do you want to increase your height through natural methods? These books are made for you!
+What you get inside our Private Groups:
+🏋️‍♂️ 1. Exercise & Stretching guides
+🥗 2. Affordable Diet plans
+😴 3. HGH Sleep optimization
+🔥 4. Daily Motivation & Height Tracker!
 
-What is inside?
-🏋️‍♂️ 1. Exercise: the craft of building up bone by applying the right stress.
-🥗 2. Diet: affordable foods that support building the body.
-😴 3. Rest: the key role sleep plays in height growth.
+📕 "6 foot 6" (37 pages) + 📗 "5 inches" (69 pages)
+📢 Available in English, Amharic and Afaan Oromoo!
 
-The books:
-📕 "6 foot 6" - 37 pages, divided into 2 main chapters.
-📗 "5 inches" - 69 pages, covered in detail across 14 chapters.
+💳 Packages:
+📘 Books Group: {price} Birr
+📘🎬 Books + Video VIP Group: {price_bundle} Birr
 
-📢 Good news! The books are available in English, Amharic and Afaan Oromoo. You get them in the language you chose.
-
-💳 Payment and delivery:
-
-📘 Books (PDF) only: {price} Birr
-📘🎬 Books (PDF) + video: {price_bundle} Birr
-(The books are digital /soft copy/, so they are delivered right here on Telegram once you have paid.)
-
-You can pay through:
-{accounts}
-
-📌 Note: after paying, send the receipt photo (screenshot) right here and we will send you the books! 🚀""",
+👇 Choose a package below to get your instant group invite link.""",
     "om": """\
-Akkam! 👋 Kitaaba keenya irratti hawwii agarsiiftanii baayyee galatoomaa! 🙏
+Akkam! 👋 Dheerina keessan karaa uumamaan dabaluu barbaadduu?
 
-Dheerinni keessan karaa uumamaa ta'een dabaluu barbaaddanii? Kitaabonni kun isiniif qophaa'aniiru!
+Keessa Garee Dhuunfaa (Private Group) keenyaa maal qaba?
+🏋️‍♂️ 1. Shaakala (Exercise) lafee fi dugugguruu diriirsu
+🥗 2. Nyaata (Diet) fi 😴 Boqonnaa (Rest)
+🔥 3. Hordoffii guyyaa guyyaa fi jajjabina garee keessatti!
 
-Keessa isaanii maal qabu?
-🏋️‍♂️ 1. Shaakala (Exercise): dhiibbaa sirrii uumuudhaan lafee ijaaruu.
-🥗 2. Nyaata (Diet): nyaata baasii hin ulfaanne qaama ijaaruuf gargaaru.
-😴 3. Boqonnaa (Rest): hirribni guddina dheerinaaf qabu ga'ee ijoo.
+📕 "6 foot 6" (fuula 37) + 📗 "5 inches" (fuula 69)
+📢 Afaan Ingiliffaa, Amaaraa fi Afaan Oromootiin qophaa'aniiru!
 
-Tarreeffama kitaabotaa:
-📕 "6 foot 6" - fuula 37, boqonnaa ijoo 2 tti qoodame.
-📗 "5 inches" - fuula 69, boqonnaa 14 keessatti bal'inaan dhiyaate.
+💳 Kaffaltii:
+📘 Kitaabota qofa (Private Group): Birr {price}
+📘🎬 Kitaabota + Viidiyoo (VIP Group): Birr {price_bundle}
 
-📢 Oduu gammachuu! Kitaabonni Afaan Ingiliffaa, Afaan Amaaraa fi Afaan Oromootiin qophaa'aniiru! Afaan filattan keessaan argattu.
-
-💳 Kaffaltii fi dhaqqabiinsa:
-
-📘 Kitaabota (PDF) qofa: Birr {price}
-📘🎬 Kitaabota (PDF) + viidiyoo: Birr {price_bundle}
-(Kitaabonni dijitaalaa /Soft Copy/ waan ta'aniif erga kaffaltanii Telegram kanaan isiniif ergamu.)
-
-Karaa armaan gadiitiin kaffaluu dandeessu:
-{accounts}
-
-📌 Yaadachiisa: Erga kaffaltanii booda suuraa ragaa kaffaltii (Screenshot) as ergaa; kitaabota isiniif ergina! 🚀""",
+👇 Paakeejii armaan gadii filadhaa."""
 }
 
-# የመጽሐፍ ፋይሎች በየቋንቋው (ከ book-bot ፎልደር አንጻር)። ደንበኛው በመረጠው ቋንቋ ይላካሉ።
-CONTENT = BASE / "content"
-BOOKS = {
-    "am": [CONTENT / "6foot6_am.pdf", CONTENT / "5inches_am.pdf"],
-    "om": [CONTENT / "6foot6_om.pdf", CONTENT / "5inches_om.pdf"],
-    "en": [CONTENT / "6foot6_en.pdf", CONTENT / "5inches_en.pdf"],
+CHANNELS = {
+    "books": int(os.getenv("BOOKS_CHANNEL_ID", "0") or 0),
+    "bundle": int(os.getenv("BUNDLE_CHANNEL_ID", "0") or 0),
+    "upgrade": int(os.getenv("BUNDLE_CHANNEL_ID", "0") or 0),
+}
+INVITE_HOURS = int(os.getenv("INVITE_HOURS", "24") or 24)
+
+INTRO_VIDEO = BASE / "media" / "intro.mp4"
+if not INTRO_VIDEO.exists() and (BASE / "intro.mp4").exists():
+    INTRO_VIDEO = BASE / "intro.mp4"
+
+INTRO_VIDEO_DURATION = 179
+INTRO_VIDEO_WIDTH = 568
+INTRO_VIDEO_HEIGHT = 320
+TESTIMONIAL_DIR = BASE / "media" / "testimonials"
+
+PAY_VOICE_NOTES = {
+    "am": BASE / "media" / "pay_voice_am.ogg",
+    "om": BASE / "media" / "pay_voice_om.ogg",
+    "en": BASE / "media" / "pay_voice_en.ogg",
 }
 
-BONUS_VIDEO = CONTENT / "bonus_video.mp4"                 # በ"PDF + ቪዲዮ" ጥቅል የሚላክ ቪዲዮ
-
-INTRO_VIDEO = BASE / "media" / "intro.mp4"                # ደንበኛው የሚያየው አጭር ቪዲዮ (አማራጭ)
-TESTIMONIAL_DIR = BASE / "media" / "testimonials"         # የደንበኞች ምስክርነት ፎቶዎች (jpg/png) (አማራጭ)
-
-# የደንበኞች ምስክርነት (ጽሑፍ)። እዚህ የሚያስገቡት ከእውነተኛ ደንበኞችዎ በፈቃዳቸው ያገኙትን ብቻ ይሁን።
-# እያንዳንዱ ንጥል አንድ ምስክርነት ነው። ባዶ ከሆነ ምንም አይታይም (ፎቶዎች ብቻ ይላካሉ)።
-# ምሳሌ ቅርጽ፦
-#   "✦ ስም — በ3 ወር ውስጥ\n  168CM ➜ 176CM (+8CM)\n  “የደንበኛው አስተያየት”"
-TESTIMONIALS = {
-    "am": [],
-    "om": [],
-    "en": [],
-}
+COACH_DAYS = (3, 7, 15, 30)
+TESTIMONIALS = {"am": [], "om": [], "en": []}
+RECEIVER_NAMES = ["Fasika"]
+REMINDER_MINUTES = 10
+NAG_MINUTES = 15
+BACKGROUND_INTERVAL = 60
+MAX_PENDING_PER_USER = 3
+DUP_MAX_BLOCKS = 6
