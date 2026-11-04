@@ -3,12 +3,12 @@ import hashlib
 import io
 import logging
 import os
-import random
 import re
 import sqlite3
 import time
 import urllib.parse
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -35,8 +35,14 @@ from telegram.ext import (
 
 import config
 import ocr
-import texts as _texts_mod
-from texts import AGE_CODES, CHOOSE_LANG, GENDER_CODES, HEIGHT_CODES, T
+
+# text.py ወይም texts.py ቢሆንም እንዲሰራ የተደረገ ጥበቃ
+try:
+    import texts as _texts_mod
+    from texts import AGE_CODES, CHOOSE_LANG, GENDER_CODES, HEIGHT_CODES, T
+except ImportError:
+    import text as _texts_mod
+    from text import AGE_CODES, CHOOSE_LANG, GENDER_CODES, HEIGHT_CODES, T
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -62,6 +68,8 @@ FAST_BONUS_HOURS = getattr(config, "FAST_BONUS_HOURS", 24)
 FOLLOWUP_HOURS = getattr(config, "FOLLOWUP_HOURS", (0.25, 6.0, 24.0))
 FOLLOWUP_RESET_HOURS = getattr(config, "FOLLOWUP_RESET_HOURS", 48.0)
 
+ETH_TZ = timezone(timedelta(hours=3))
+
 BOT_USERNAME = ""
 LAST_BACKUP_TS = 0.0
 LAST_GROUP_POST_TS = 0.0
@@ -72,7 +80,6 @@ log = logging.getLogger("bookbot")
 for _noisy in ("httpx", "httpcore"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
-# texts.py ባይዘመንም እንኳ ImportError እንዳይመጣ እዚሁ ውስጥ የተዘጋጁ የግሩፕ ማነቃቂያ ጽሑፎች
 GROUP_MOTIVATION_POSTS = getattr(_texts_mod, "GROUP_MOTIVATION_POSTS", None) or [
     "🔥 **የዕለቱ የቁመት እድገት ማስታወሻ!**\n\nዛሬ የመወጠር (Stretching) ልምምድዎን ሰርተዋል? አከርካሪዎ በየቀኑ በትክክለኛ ልምምድ ሲሳብ ለውጡ በሳምንታት ውስጥ መታየት ይጀምራል!\n\n👇 የዛሬውን ልምምድ ከጨረሱ ወይም ቁመትዎን ለመመዝገብ ከታች ያለውን አዝራር ይጫኑ፦",
     "😴 **የእንቅልፍ እና የዕድገት ሆርሞን (HGH) ምስጢር!**\n\nሰውነታችን ከ 75% በላይ የሚሆነውን የዕድገት ሆርሞን የሚያመርተው ማታ በጥልቅ እንቅልፍ ወቅት ነው። ከመተኛትዎ በፊት ለ 5 ደቂቃ የአከርካሪ ማሳሳቢያ ልምምድ ሰርተው በጊዜ ይተኙ!\n\n👇 የዛሬውን ተከታታይ ልምምድዎን (Streak) አሁኑኑ ያስመዝግቡ፦",
@@ -84,28 +91,13 @@ FALLBACK_TEXTS = {
     "analysis_young": "አስደናቂ ዜና! በዚህ የእድሜ ክልል የእድገት ፕሌቶችዎ እና የዕድገት ሆርሞን (HGH) ከፍተኛ ንቁ ደረጃ ላይ ይገኛሉ።\n📈 ከ 8 እስከ 12 CM የቁመት መጨመር ከፍተኛ እድል አለዎት!",
     "analysis_adult": "መልካም ዜና! በዚህ የእድሜ ክልል የአከርካሪ መለጠጥ (Spinal Decompression) እና የአቋም ማስተካከያ ልምምዶችን በመጠቀም\n📈 ከ 5 እስከ 8 CM ተጨማሪ ቁመት ማግኘት ይችላሉ!",
     "btn_upgrade": "⬆️ ወደ ቪዲዮ ግሩፕ አሳድግ ({price} ብር ብቻ)",
-    "btn_buy_gift": "🎁 ለጓደኛ በስጦታ ግዛ",
-    "btn_redeem_gift": "🔑 የስጦታ ኮድ አለኝ",
-    "gift_menu_text": "🎁 **ለጓደኛ ወይም ለቤተሰብ ስጦታ ይግዙ!**\n\nክፍያው እንደተረጋገጠ ልዩ የስጦታ ኮድ (`GIFT-XXXX`) ይሰጥዎታል። ኮዱን ለጓደኛዎ ሲልኩለት ወዲያውኑ ወደ ልዩ ግሩፑ መግባት ይችላል! 👇",
-    "btn_gift_books": "🎁 ስጦታ፦ መጽሐፍ ብቻ ({price} ብር)",
-    "btn_gift_bundle": "🎁👑 ስጦታ፦ መጽሐፍ + ቪዲዮ ({price} ብር)",
-    "gift_code_created": "🎉 **የስጦታ ግዢዎ ተረጋግጧል!**\n\n🔑 የስጦታ ኮድ፦ `{code}`\n📦 ጥቅል፦ {pkg_name}\n\nይህን ኮድ ለጓደኛዎ ይላኩለት፤ ቦቱ ውስጥ **«🔑 የስጦታ ኮድ አለኝ»** የሚለውን ሲነካ ወዲያውኑ የግሩፑ ሊንክ ይከፈትለታል!",
-    "ask_gift_code": "🔑 እባክዎ የተሰጠዎትን የስጦታ ኮድ (ለምሳሌ፦ `GIFT-1234`) ይጻፉ 👇",
-    "gift_redeemed_ok": "🎉 እንኳን ደስ አለዎት! የስጦታ ኮዱ ትክክል ነው፤ የግሩፑ መግቢያ ሊንክ ከታች ተልኮልዎታል! 👇",
-    "gift_invalid": "❌ ይህ የስጦታ ኮድ ትክክል አይደለም ወይም ቀድሞ ጥቅም ላይ ውሏል።",
     "social_proof_line": "\n\n🔥 ዛሬ ብቻ {today_count} ወጣቶች ወደ ግሩፑ ተቀላቅለዋል! (የመጨረሻው ከ {mins_ago} ደቂቃ በፊት)",
     "fast_bonus_line": "\n⏳ በ {rem_hr} ውስጥ ከከፈሉ የ VIP ግሩፕ ልዩ ድጋፍ ያገኛሉ!",
     "fast_bonus_expired": "",
-    "btn_promo": "🎟️ የቅናሽ ኮድ አለኝ (Promo Code)",
-    "ask_promo": "🎟️ እባክዎ ያለዎትን የቅናሽ ኮድ ይጻፉ 👇",
-    "promo_ok": "🎉 የ {disc} ብር ቅናሽ ተደርጎልዎታል! አዲሱ ዋጋ፦ {new_price} ብር።",
-    "promo_invalid": "❌ ይህ የቅናሽ ኮድ ትክክል አይደለም።",
     "faq_time_btn": "❓ በስንት ደቂቃ ወደ ግሩፑ እገባለሁ?",
     "faq_time_ans": "⏱ የደረሰኝ ፎቶ እንደላኩ ከ 1 እስከ 3 ደቂቃ ውስጥ ተረጋግጦ ወዲያውኑ ወደ Private ግሩፑ የሚያስገባዎት ሊንክ እዚሁ ይደርስዎታል!",
     "faq_other_btn": "❓ በሌላ ሰው ስልክ/ባንክ መክፈል ይቻላል?",
     "faq_other_ans": "✅ አዎ ይቻላል! በማንኛውም ሰው ስልክ ወይም ባንክ ከፍለው የደረሰኙን ፎቶ እዚህ መላክ ይችላሉ።",
-    "ussd_telebirr_btn": "📲 የቴሌብር USSD (*127#) ቅዳ",
-    "ussd_cbe_btn": "🏦 የ CBE USSD (*889#) ቅዳ",
     "voice_caption": "🎧 እንዴት በቀላሉ እንደሚከፍሉና ወደ ግሩፑ ወዲያውኑ እንደሚገቡ ይህን ድምጽ ያዳምጡ።",
     "bad_photo_quality": "⚠️ የላኩት ፎቶ በጣም የጨለመ ወይም ጥራቱ አነስተኛ ስለሆነ አይነበብም። እባክዎ ግልጽ Screenshot ይላኩ። 👇",
     "status_checking": "🔵 ሁኔታ፦ አድሚኑ ደረሰኝዎን እያረጋገጠ ነው...\n⏳ እባክዎ ጥቂት ይጠብቁን። 🙏",
@@ -149,8 +141,6 @@ FALLBACK_TEXTS = {
 
 def check_texts():
     config.PRICES.setdefault("upgrade", max(100, config.PRICES.get("bundle", 597) - config.PRICES.get("books", 397)))
-    config.PRICES.setdefault("gift_books", config.PRICES.get("books", 397))
-    config.PRICES.setdefault("gift_bundle", config.PRICES.get("bundle", 597))
     if "upgrade" not in getattr(config, "CHANNELS", {}):
         config.CHANNELS["upgrade"] = config.CHANNELS.get("bundle", 0)
     for lang, table in T.items():
@@ -218,19 +208,6 @@ def init_db():
                 amount REAL,
                 raw_text TEXT,
                 used_order_id INTEGER DEFAULT NULL,
-                created REAL
-            );
-            CREATE TABLE IF NOT EXISTS promos (
-                code TEXT PRIMARY KEY,
-                discount INTEGER,
-                max_uses INTEGER,
-                used_count INTEGER DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS gifts (
-                code TEXT PRIMARY KEY,
-                package TEXT,
-                buyer_id INTEGER,
-                redeemed_by INTEGER DEFAULT NULL,
                 created REAL
             );
             """
@@ -339,7 +316,7 @@ def st_get(user_id):
 
 
 def st_set(user_id, **kv):
-    allowed = {"pkg", "step", "photo", "pay_started", "reminded", "promo_code", "discount"}
+    allowed = {"pkg", "step", "photo", "pay_started", "reminded"}
     if not set(kv) <= allowed:
         raise ValueError(f"unknown session field: {set(kv) - allowed}")
     execute("INSERT OR IGNORE INTO sessions(user_id) VALUES(?)", (user_id,))
@@ -553,8 +530,6 @@ PKG_LABEL = {
     "books": "📕 መጽሐፍ ብቻ (Private Group)",
     "bundle": "👑 መጽሐፍ + ቪዲዮ (VIP Group)",
     "upgrade": "⬆️ ወደ VIP ግሩፕ ማሳደጊያ",
-    "gift_books": "🎁 ስጦታ፦ መጽሐፍ ብቻ ግሩፕ",
-    "gift_bundle": "🎁👑 ስጦታ፦ መጽሐፍ + ቪዲዮ ግሩፕ",
 }
 
 
@@ -648,28 +623,11 @@ def b_pkg(context, user, lang):
         [
             [InlineKeyboardButton(T[lang]["btn_books"].format(price=p["books"]), callback_data="pkg:books")],
             [InlineKeyboardButton(T[lang]["btn_bundle"].format(price=p["bundle"]), callback_data="pkg:bundle")],
-            [
-                InlineKeyboardButton(T[lang]["btn_buy_gift"], callback_data="go:gift"),
-                InlineKeyboardButton(T[lang]["btn_redeem_gift"], callback_data="gift:redeem"),
-            ],
             [InlineKeyboardButton(T[lang]["btn_refer"].format(count=cnt, target=target), callback_data="go:refer")],
             [back_button(lang, "proof")],
         ]
     )
     return text, kb
-
-
-def b_gift(context, user, lang):
-    p = config.PRICES
-    back_target = "vip" if user_best_package(user.id) else "pkg"
-    kb = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton(T[lang]["btn_gift_books"].format(price=p["gift_books"]), callback_data="pkg:gift_books")],
-            [InlineKeyboardButton(T[lang]["btn_gift_bundle"].format(price=p["gift_bundle"]), callback_data="pkg:gift_bundle")],
-            [back_button(lang, back_target)],
-        ]
-    )
-    return T[lang]["gift_menu_text"], kb
 
 
 def format_height_progress(user_id, lang):
@@ -697,7 +655,6 @@ def b_vip(context, user, lang):
     ]
     if best == "books":
         rows.append([InlineKeyboardButton(T[lang]["btn_upgrade"].format(price=config.PRICES.get("upgrade", 200)), callback_data="pkg:upgrade")])
-    rows.append([InlineKeyboardButton(T[lang]["btn_buy_gift"], callback_data="go:gift")])
     rows.append([InlineKeyboardButton(T[lang]["btn_refer"].format(count=cnt, target=target), callback_data="go:refer")])
     rows.append([InlineKeyboardButton(T[lang]["btn_vip_restart"], callback_data="go:lang")])
     return text, InlineKeyboardMarkup(rows)
@@ -719,7 +676,7 @@ def b_refer(context, user, lang):
     return text, kb
 
 
-def account_copy_rows(lang="am", has_promo=False):
+def account_copy_rows(lang="am"):
     rows = []
     for line in config.PAYMENT_ACCOUNTS.splitlines():
         nums = re.findall(r"\d{6,}", line)
@@ -727,15 +684,6 @@ def account_copy_rows(lang="am", has_promo=False):
             label = re.sub(r"\s*\(.*?\)", "", line).strip()[:55]
             rows.append([InlineKeyboardButton(f"📋 {label}", copy_text=CopyTextButton(text=nums[0]))])
     rows = rows[:6]
-    ussd_row = []
-    if getattr(config, "TELEBIRR_PHONE", ""):
-        ussd_row.append(InlineKeyboardButton(T[lang]["ussd_telebirr_btn"], copy_text=CopyTextButton(text="*127#")))
-    if getattr(config, "CBE_ACCOUNT", ""):
-        ussd_row.append(InlineKeyboardButton(T[lang]["ussd_cbe_btn"], copy_text=CopyTextButton(text="*889#")))
-    if ussd_row:
-        rows.append(ussd_row)
-    if not has_promo:
-        rows.append([InlineKeyboardButton(T[lang]["btn_promo"], callback_data="promo:ask")])
     rows.append([InlineKeyboardButton(T[lang]["faq_time_btn"], callback_data="faq:time")])
     rows.append([InlineKeyboardButton(T[lang]["faq_other_btn"], callback_data="faq:other")])
     return rows
@@ -746,24 +694,22 @@ def b_pay(context, user, lang):
     pkg = s.get("pkg")
     if pkg not in config.PRICES:
         return b_pkg(context, user, lang)
-    disc = int(s.get("discount") or 0)
-    final_price = max(10, config.PRICES[pkg] - disc)
-    disc_note = f"(🎟️ -{disc} ብር ቅናሽ!)" if disc > 0 else ""
+    final_price = config.PRICES[pkg]
     raw_pay = T[lang]["pay"]
     extra_footer = get_social_and_bonus_footer(user.id, lang)
     if "{discount_note}" in raw_pay:
-        text = raw_pay.format(price=final_price, discount_note=disc_note, accounts=config.PAYMENT_ACCOUNTS, extra_footer=extra_footer)
+        text = raw_pay.format(price=final_price, discount_note="", accounts=config.PAYMENT_ACCOUNTS, extra_footer=extra_footer)
     else:
-        text = raw_pay.format(price=f"{final_price} {disc_note}".strip(), accounts=config.PAYMENT_ACCOUNTS) + extra_footer
+        text = raw_pay.format(price=final_price, accounts=config.PAYMENT_ACCOUNTS) + extra_footer
     st_set(user.id, step="await_photo", pay_started=s.get("pay_started") or time.time())
-    back_target = "gift" if pkg.startswith("gift_") else ("vip" if pkg == "upgrade" else "pkg")
-    return text, InlineKeyboardMarkup(account_copy_rows(lang, has_promo=bool(disc)) + [[back_button(lang, back_target)]])
+    back_target = "vip" if pkg == "upgrade" else "pkg"
+    return text, InlineKeyboardMarkup(account_copy_rows(lang) + [[back_button(lang, back_target)]])
 
 
 BUILD = {
     "lang": b_lang, "welcome": b_welcome, "q1": b_q1, "q2": b_q2, "q3": b_q3,
     "offer": b_offer, "video": b_video, "proof": b_proof, "pkg": b_pkg, "pay": b_pay,
-    "vip": b_vip, "refer": b_refer, "gift": b_gift,
+    "vip": b_vip, "refer": b_refer,
 }
 
 
@@ -876,10 +822,11 @@ async def show(name, context, chat_id, user, current=None, can_edit=False):
         await delete_many(context, chat_id, old)
 
 
-# ---------------------------------------------------------------- Streak helper
+# ---------------------------------------------------------------- Streak helper (Ethiopia Timezone UTC+3)
 async def process_user_streak(bot, user, lang):
-    today_str = time.strftime("%Y-%m-%d")
-    yest_str = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400))
+    now_eth = datetime.now(ETH_TZ)
+    today_str = now_eth.strftime("%Y-%m-%d")
+    yest_str = (now_eth - timedelta(days=1)).strftime("%Y-%m-%d")
     r = fetch("SELECT COALESCE(streak_count,0) AS sc, streak_last_date FROM users WHERE user_id=?", (user.id,))[0]
     if r["streak_last_date"] == today_str:
         return False, r["sc"], T[lang]["streak_already"].format(streak=r["sc"])
@@ -968,14 +915,6 @@ async def on_vip_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show("vip", context, q.message.chat_id, u, current=q.message.message_id, can_edit=_can_edit(q))
 
 
-async def on_gift_redeem_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    ack(q)
-    uid = q.from_user.id
-    st_set(uid, step="await_gift")
-    await context.bot.send_message(uid, T[get_lang(uid)]["ask_gift_code"])
-
-
 async def on_go(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     ack(q)
@@ -1010,16 +949,9 @@ async def on_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     ack(q)
     pkg = q.data.split(":")[1]
-    if pkg in config.PRICES:
-        st_set(q.from_user.id, pkg=pkg, promo_code=None, discount=0)
+    if pkg in ("books", "bundle", "upgrade") and pkg in config.PRICES:
+        st_set(q.from_user.id, pkg=pkg)
         await show("pay", context, q.message.chat_id, q.from_user, current=q.message.message_id, can_edit=_can_edit(q))
-
-
-async def on_promo_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    ack(q)
-    st_set(q.from_user.id, step="await_promo")
-    await context.bot.send_message(q.from_user.id, T[get_lang(q.from_user.id)]["ask_promo"])
 
 
 async def on_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1089,7 +1021,7 @@ async def is_duplicate_receipt(uniq, digest, small=None):
 
 
 def ready_to_pay(s):
-    return s.get("step") in ("await_photo", "await_promo") and s.get("pkg") in config.PRICES
+    return s.get("step") == "await_photo" and s.get("pkg") in config.PRICES
 
 
 async def update_live_user_status(bot, order, text_key):
@@ -1128,18 +1060,16 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if fetch("SELECT COUNT(*) AS n FROM orders WHERE user_id=? AND status='pending'", (uid,))[0]["n"] >= MAX_PENDING_PER_USER:
         await update.message.reply_text(T[lang]["help_busy"])
         return
-    pkg, disc, promo = s["pkg"], int(s.get("discount") or 0), s.get("promo_code")
-    final_price = max(10, config.PRICES[pkg] - disc)
+    pkg = s["pkg"]
+    final_price = config.PRICES[pkg]
     try:
         order_id = execute(
-            "INSERT INTO orders(user_id, package, price, promo_code, photo_file_id, photo_uid, photo_hash, photo_thumb) VALUES(?,?,?,?,?,?,?,?)",
-            (uid, pkg, final_price, promo, fid, uniq, digest, small),
+            "INSERT INTO orders(user_id, package, price, photo_file_id, photo_uid, photo_hash, photo_thumb) VALUES(?,?,?,?,?,?,?)",
+            (uid, pkg, final_price, fid, uniq, digest, small),
         )
     except sqlite3.IntegrityError:
         await update.message.reply_text(T[lang]["dup_receipt"])
         return
-    if promo:
-        execute("UPDATE promos SET used_count = COALESCE(used_count, 0) + 1 WHERE code=?", (promo,))
     st_clear(uid)
     ensure_user(user)
     status_msg = await update.message.reply_text(T[lang]["received"])
@@ -1162,20 +1092,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     s = st_get(uid)
     lang = get_lang(uid)
-
-    if s.get("step") == "await_gift":
-        code = txt.upper().strip()
-        rows = fetch("SELECT * FROM gifts WHERE code=? AND redeemed_by IS NULL", (code,))
-        if not rows or not execute_rc("UPDATE gifts SET redeemed_by=? WHERE code=? AND redeemed_by IS NULL", (uid, code)):
-            st_clear(uid)
-            await update.message.reply_text(T[lang]["gift_invalid"])
-            return
-        st_clear(uid)
-        order_id = execute("INSERT INTO orders(user_id, package, price, ref, status) VALUES(?,?,0,?,'approved')", (uid, rows[0]["package"], code))
-        order = dict(fetch("SELECT * FROM orders WHERE id=?", (order_id,))[0])
-        await update.message.reply_text(T[lang]["gift_redeemed_ok"])
-        await deliver_approved_order(context.bot, order)
-        return
 
     if s.get("step") == "await_height":
         nums = re.findall(r"\d+(?:\.\d+)?", txt)
@@ -1207,20 +1123,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show("vip", context, update.effective_chat.id, user)
         return
 
-    if s.get("step") == "await_promo" and s.get("pkg") in config.PRICES:
-        code = txt.upper()
-        rows = fetch("SELECT * FROM promos WHERE code=? AND used_count < max_uses", (code,))
-        if not rows:
-            st_set(uid, step="await_photo")
-            await update.message.reply_text(T[lang]["promo_invalid"])
-            return
-        disc = int(rows[0]["discount"])
-        new_price = max(10, config.PRICES[s["pkg"]] - disc)
-        st_set(uid, promo_code=code, discount=disc, step="await_photo")
-        await update.message.reply_text(T[lang]["promo_ok"].format(disc=disc, new_price=new_price))
-        await show("pay", context, update.effective_chat.id, user)
-        return
-
     if s.get("step") == "await_testi":
         st_clear(uid)
         uname = f" @{user.username}" if user.username else ""
@@ -1232,7 +1134,147 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(T[lang]["need_photo" if ready_to_pay(s) else "hint"])
 
 
-# ---------------------------------------------------------------- Admin Commands
+# ---------------------------------------------------------------- Admin Dashboard & Commands
+def build_admin_dashboard():
+    total_u = fetch("SELECT COUNT(*) AS n FROM users")[0]["n"]
+    today_u = fetch("SELECT COUNT(*) AS n FROM users WHERE date(created)=date('now')")[0]["n"]
+    blocked_u = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(bot_blocked,0)=1")[0]["n"]
+
+    pending_o = fetch("SELECT COUNT(*) AS n FROM orders WHERE status='pending'")[0]["n"]
+    approved_o = fetch("SELECT COUNT(*) AS n, COALESCE(SUM(price),0) AS rev FROM orders WHERE status='approved'")[0]
+    today_o = fetch("SELECT COUNT(*) AS n, COALESCE(SUM(price),0) AS rev FROM orders WHERE status='approved' AND date(created)=date('now')")[0]
+    rejected_o = fetch("SELECT COUNT(*) AS n FROM orders WHERE status='rejected'")[0]["n"]
+
+    books_cnt = fetch("SELECT COUNT(*) AS n FROM orders WHERE status='approved' AND package='books'")[0]["n"]
+    bundle_cnt = fetch("SELECT COUNT(*) AS n FROM orders WHERE status='approved' AND package IN ('bundle','upgrade')")[0]["n"]
+    refs_cnt = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(ref_credited,0)=1")[0]["n"]
+
+    f_q = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 1")[0]["n"]
+    f_res = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 2")[0]["n"]
+    f_vid = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 3")[0]["n"]
+    f_pkg = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 4")[0]["n"]
+    f_pay = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 5")[0]["n"]
+
+    src_rows = fetch(
+        """
+        SELECT COALESCE(u.ad_source, 'ቀጥታ (Direct)') AS src, COUNT(DISTINCT u.user_id) AS u_cnt,
+               COUNT(o.id) AS o_cnt, COALESCE(SUM(o.price), 0) AS rev
+        FROM users u LEFT JOIN orders o ON o.user_id = u.user_id AND o.status = 'approved'
+        GROUP BY COALESCE(u.ad_source, 'ቀጥታ (Direct)') ORDER BY rev DESC, u_cnt DESC LIMIT 5
+        """
+    )
+    src_lines = [f"  • {r['src']}: {r['u_cnt']} ሰው ({r['o_cnt']} ሽያጭ — {r['rev']} ብር)" for r in src_rows]
+
+    text = (
+        f"🎛 **የአድሚን ዳሽቦርድ — {config.BOT_NAME}**\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 **ተጠቃሚዎች**\n"
+        f"  • ጠቅላላ፦ {total_u} (ዛሬ የገቡ፦ +{today_u})\n"
+        f"  • ቦቱን ያገዱ (Blocked)፦ {blocked_u}\n\n"
+        f"💰 **ሽያጭ እና ገቢ**\n"
+        f"  • ጠቅላላ የተሸጠ፦ {approved_o['n']} ጥቅል ({approved_o['rev']} ብር)\n"
+        f"  • የዛሬ ሽያጭ፦ {today_o['n']} ጥቅል ({today_o['rev']} ብር)\n"
+        f"  • 📕 መጽሐፍ ብቻ፦ {books_cnt} | 👑 VIP (ቪዲዮ)፦ {bundle_cnt}\n"
+        f"  • ⏳ በመጠባበቅ ላይ፦ {pending_o} | ❌ ውድቅ፦ {rejected_o}\n"
+        f"  • 🎁 በሪፈራል የገዙ፦ {refs_cnt}\n\n"
+        f"📈 **የደንበኞች ጉዞ (Funnel)**\n"
+        f"  🏁 ጥያቄ፦ {f_q} ➔ 🧬 ውጤት፦ {f_res} ➔ 🎥 ቪዲዮ፦ {f_vid}\n"
+        f"  📦 ጥቅል፦ {f_pkg} ➔ 💳 ክፍያ ማያ፦ {f_pay}\n\n"
+        f"📢 **ዋና የማስታወቂያ ምንጮች**\n" + ("\n".join(src_lines) if src_lines else "  • መረጃ የለም")
+    )
+
+    kb = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(f"⏳ ያልተረጋገጡ ደረሰኞች ({pending_o})", callback_data="adm:pending"),
+                InlineKeyboardButton("👥 ተጠቃሚዎች", callback_data="uopen:0"),
+            ],
+            [
+                InlineKeyboardButton("🔥 ግሩፕ ፖስት ልቀቅ", callback_data="adm:postgroup"),
+                InlineKeyboardButton("🔍 Follow-up ክትትል", callback_data="adm:followup"),
+            ],
+            [
+                InlineKeyboardButton("📢 Broadcast መመሪያ", callback_data="adm:bcast_help"),
+                InlineKeyboardButton("🔎 ደንበኛ ፈልግ", callback_data="adm:find_help"),
+            ],
+            [
+                InlineKeyboardButton("⚡ የSMS ክፍያ መመሪያ", callback_data="adm:sms_help"),
+                InlineKeyboardButton("💾 ዳታቤዝ ባክአፕ", callback_data="adm:backup"),
+            ],
+            [
+                InlineKeyboardButton("🔄 ዳሽቦርዱን አድስ (Refresh)", callback_data="adm:refresh"),
+            ],
+        ]
+    )
+    return text, kb
+
+
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    text, kb = build_admin_dashboard()
+    await update.message.reply_text(text, reply_markup=kb)
+
+
+async def on_admin_dash(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.from_user.id != ADMIN_ID:
+        return
+    action = q.data.split(":")[1]
+
+    if action == "refresh":
+        text, kb = build_admin_dashboard()
+        try:
+            await q.edit_message_text(text, reply_markup=kb)
+        except Exception:
+            pass
+        await q.answer("✅ ዳሽቦርዱ ታድሷል!")
+    elif action == "pending":
+        await q.answer()
+        rows = fetch("SELECT id FROM orders WHERE status='pending' ORDER BY id")
+        if not rows:
+            await context.bot.send_message(ADMIN_ID, "✅ በመጠባበቅ ላይ ያለ ደረሰኝ የለም።")
+            return
+        for r in rows[:10]:
+            await send_order_to_admin(context.bot, r["id"])
+    elif action == "postgroup":
+        sent = await post_motivation_to_groups(context.bot)
+        await q.answer(f"✅ ወደ {sent} ግሩፕ(ዎች) ተለቋል!" if sent else "⚠️ ምንም ግሩፕ አልተገኘም (Channel ID ያረጋግጡ)።", show_alert=True)
+    elif action == "followup":
+        await q.answer()
+        text, kb = get_followup_page(0)
+        await context.bot.send_message(ADMIN_ID, text, reply_markup=kb)
+    elif action == "backup":
+        await q.answer("💾 ባክአፕ በመላክ ላይ...")
+        await send_db_backup(context.bot)
+    elif action == "bcast_help":
+        await q.answer()
+        await context.bot.send_message(
+            ADMIN_ID,
+            "📢 **ጅምላ መልዕክት (Broadcast) ለመላክ፦**\n\n"
+            "1. መላክ የሚፈልጉትን ማንኛውንም መልዕክት (ጽሑፍ፣ ፎቶ፣ ቪዲዮ ወይም ድምጽ) ወደ ቦቱ ይላኩ።\n"
+            "2. ለላኩት መልዕክት **Reply** አድርገው `/broadcast` ብለው ይጻፉ።\n"
+            "3. ቦቱ «ላልከፈሉ ብቻ»፣ «መጽሐፍ ብቻ ለገዙ» ወይስ «ለሁሉም» ብሎ ሲጠይቅዎት ይምረጡ።",
+        )
+    elif action == "find_help":
+        await q.answer()
+        await context.bot.send_message(
+            ADMIN_ID,
+            "🔎 **ደንበኛ ለመፈለግና በነፃ ግሩፕ ለመስጠት፦**\n\n"
+            "• `/find <ስም፣ @username ወይም ID>` ብለው ይጻፉ።\n"
+            "  ምሳሌ፦ `/find abebe` ወይም `/find 123456789`\n"
+            "• ከሚመጣልዎት መረጃ ስር በቀጥታ ወደ መጽሐፍ ወይም VIP ግሩፕ የሚያስገባ አዝራር ያገኛሉ።",
+        )
+    elif action == "sms_help":
+        await q.answer()
+        await context.bot.send_message(
+            ADMIN_ID,
+            "⚡ **በባንክ SMS ደረሰኝ በራስ-ሰር ለማጽደቅ፦**\n\n"
+            "• ከ CBE ወይም Telebirr የደረሰዎትን የክፍያ SMS ቀጥታ ወደ ቦቱ Forward ወይም Copy/Paste ያድርጉ።\n"
+            "• ቦቱ የግብይት ቁጥሩን (TxID) እና ብሩን ይመዘግባል፤ ደንበኛው ስክሪንሾት ሲልክ በOCR አንብቦ ወዲያውኑ በራሱ ያጸድقلهታል!",
+        )
+
+
 async def cmd_postgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -1276,29 +1318,6 @@ async def on_admin_grant(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order = dict(fetch("SELECT * FROM orders WHERE id=?", (order_id,))[0])
     ok, info = await deliver_approved_order(context.bot, order)
     await q.answer("✅ የግሩፕ መግቢያ ሊንኩ ለደንበኛው ተልኳል!" if ok else f"⚠️ {info}"[:190], show_alert=True)
-
-
-async def cmd_addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if len(context.args) < 2 or not context.args[1].isdigit():
-        await update.message.reply_text("አጠቃቀም፦ `/addpromo <ኮድ> <ቅናሽ_ብር> [ብዛት]`")
-        return
-    code, disc = context.args[0].upper(), int(context.args[1])
-    max_u = int(context.args[2]) if len(context.args) >= 3 and context.args[2].isdigit() else 100
-    execute("INSERT OR REPLACE INTO promos(code, discount, max_uses, used_count) VALUES(?,?,?,0)", (code, disc, max_u))
-    await update.message.reply_text(f"✅ የቅናሽ ኮድ ተፈጥሯል፦ `{code}` (-{disc} ብር፣ ለ {max_u} ሰው)")
-
-
-async def cmd_delpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if not context.args:
-        rows = fetch("SELECT * FROM promos")
-        await update.message.reply_text("\n".join(["🎟️ ኮዶች፦"] + [f"• {r['code']} (-{r['discount']} ብር) — {r['used_count']}/{r['max_uses']}" for r in rows]) if rows else "ምንም የቅናሽ ኮድ የለም።")
-        return
-    execute("DELETE FROM promos WHERE code=?", (context.args[0].upper(),))
-    await update.message.reply_text("🗑️ ተሰርዟል።")
 
 
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1411,7 +1430,7 @@ async def try_match_pending_with_sms(bot, specific_order_id=None, ocr_text=""):
 
 
 async def credit_referrer_on_purchase(bot, buyer_id, package):
-    if package not in ("books", "bundle", "gift_books", "gift_bundle"):
+    if package not in ("books", "bundle"):
         return
     rows = fetch("SELECT referred_by, COALESCE(ref_credited, 0) AS credited FROM users WHERE user_id=?", (buyer_id,))
     if not rows or not rows[0]["referred_by"] or rows[0]["credited"]:
@@ -1452,11 +1471,10 @@ def fit_caption(text, suffix=""):
 
 def order_caption(order, user, footer=True):
     uname = f" @{user['username']}" if user["username"] else ""
-    promo_tag = f" (🎟️ {order['promo_code']})" if order.get("promo_code") else ""
     text = (
         f"🧾 ትዕዛዝ #{order['id']}\n"
         f"ደንበኛ፦ {user['name']} (id {order['user_id']}){uname}\n"
-        f"ጥቅል፦ {PKG_LABEL.get(order['package'], order['package'])} | ዋጋ፦ {order['price']} ብር{promo_tag}\n"
+        f"ጥቅል፦ {PKG_LABEL.get(order['package'], order['package'])} | ዋጋ፦ {order['price']} ብር\n"
         f"ቁመት/እድሜ/ፆታ፦ {user['height']}/{user['age']}/{user['gender']}"
     )
     if order["note"]:
@@ -1599,25 +1617,8 @@ async def send_invite(bot, order):
 async def deliver_approved_order(bot, order, auto_sms=None):
     uid = order["user_id"]
     pkg = order["package"]
-    lang = get_lang(uid)
     await update_live_user_status(bot, order, "status_approved")
     await credit_referrer_on_purchase(bot, uid, pkg)
-
-    if pkg in ("gift_books", "gift_bundle"):
-        real_pkg = "books" if pkg == "gift_books" else "bundle"
-        code = f"GIFT-{random.randint(1000, 9999)}-{order['id']}"
-        execute("INSERT OR REPLACE INTO gifts(code, package, buyer_id, created) VALUES(?,?,?,?)", (code, real_pkg, uid, time.time()))
-        try:
-            await bot.send_message(uid, T[lang]["gift_code_created"].format(code=code, pkg_name=PKG_LABEL[real_pkg]))
-        except Exception:
-            pass
-        full, user = load_order(order["id"])
-        if full and full.get("admin_msg"):
-            try:
-                await bot.edit_message_caption(chat_id=ADMIN_ID, message_id=full["admin_msg"], caption=fit_caption(order_caption(full, user, footer=False), f"\n\n✅ የስጦታ ኮድ ({code}) ተልኳል"))
-            except Exception:
-                pass
-        return True, code
 
     execute("UPDATE users SET bought_at=COALESCE(bought_at, ?), coach_stage=COALESCE(coach_stage, 0), max_funnel=6 WHERE user_id=?", (time.time(), uid))
     label = PKG_LABEL.get(pkg, pkg)
@@ -1722,35 +1723,7 @@ async def on_admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------------------------------------------------------- Stats & Users
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    users = fetch("SELECT COUNT(*) AS n FROM users")[0]["n"]
-    pending = fetch("SELECT COUNT(*) AS n FROM orders WHERE status='pending'")[0]["n"]
-    ok = fetch("SELECT COUNT(*) AS n, COALESCE(SUM(price),0) AS s FROM orders WHERE status='approved'")[0]
-    refs = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(ref_credited, 0)=1")[0]["n"]
-    f_q = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 1")[0]["n"]
-    f_res = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 2")[0]["n"]
-    f_vid = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 3")[0]["n"]
-    f_pkg = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 4")[0]["n"]
-    f_pay = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 5")[0]["n"]
-
-    src_rows = fetch(
-        """
-        SELECT COALESCE(u.ad_source, 'ቀጥታ (Direct)') AS src, COUNT(DISTINCT u.user_id) AS u_cnt,
-               COUNT(o.id) AS o_cnt, COALESCE(SUM(o.price), 0) AS rev
-        FROM users u LEFT JOIN orders o ON o.user_id = u.user_id AND o.status = 'approved'
-        GROUP BY COALESCE(u.ad_source, 'ቀጥታ (Direct)') ORDER BY rev DESC, u_cnt DESC LIMIT 6
-        """
-    )
-    src_lines = [f"• {r['src']}: {r['u_cnt']} ሰው ({r['o_cnt']} ሽያጭ — {r['rev']} ብር)" for r in src_rows]
-    text = (
-        f"📊 **አጠቃላይ ስታቲስቲክስ**\n👥 ተጠቃሚዎች፦ {users} | ⏳ በመጠባበቅ ላይ፦ {pending}\n"
-        f"✅ የተሸጠ፦ {ok['n']} ({ok['s']} ብር) | 🎁 በሪፈራል፦ {refs}\n\n"
-        f"📈 **የደንበኞች ጉዞ (Funnel)**\n🏁 ጥያቄ፦ {f_q} ➔ 🧬 ውጤት፦ {f_res} ➔ 🎥 ቪዲዮ፦ {f_vid} ➔ 📦 ጥቅል፦ {f_pkg} ➔ 💳 ክፍያ፦ {f_pay}\n\n"
-        f"📢 **የማስታወቂያ ምንጮች**\n" + "\n".join(src_lines)
-    )
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("👥 የተጠቃሚዎች ዝርዝር", callback_data="uopen:0")]])
-    await update.message.reply_text(text, reply_markup=kb)
+    await cmd_admin(update, context)
 
 
 def get_users_page(page=0):
@@ -1971,13 +1944,12 @@ async def post_init(app):
         await app.bot.set_my_commands(user_cmds)
         await app.bot.set_my_commands(
             user_cmds + [
+                BotCommand("admin", "🎛 የአድሚን ዳሽቦርድ (Admin Panel)"),
                 BotCommand("pending", "⏳ ያልተረጋገጡ ደረሰኞች"),
                 BotCommand("postgroup", "🔥 ወደ ግሩፖቹ ማነቃቂያ ፖስት ልቀቅ"),
                 BotCommand("find", "🔎 ደንበኛ መፈለጊያ"),
-                BotCommand("stats", "📊 ስታቲስቲክስ"),
                 BotCommand("users", "👥 ተጠቃሚዎች"),
                 BotCommand("broadcast", "📢 ጅምላ መልዕክት"),
-                BotCommand("addpromo", "🎟️ ቅናሽ ኮድ"),
                 BotCommand("backup", "💾 ባክአፕ"),
                 BotCommand("sms", "⚡ የባንክ SMS መዝግብ"),
                 BotCommand("resend", "🔗 የግሩፕ ሊንክ"),
@@ -2005,28 +1977,25 @@ def main():
     app.add_error_handler(on_error)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("refer", cmd_refer))
+    app.add_handler(CommandHandler(["admin", "panel", "stats"], cmd_admin))
     app.add_handler(CommandHandler("postgroup", cmd_postgroup))
     app.add_handler(CommandHandler("find", cmd_find))
-    app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("users", cmd_users))
     app.add_handler(CommandHandler("test_followup", cmd_test_followup))
     app.add_handler(CommandHandler("pending", cmd_pending))
     app.add_handler(CommandHandler("resend", cmd_resend))
     app.add_handler(CommandHandler("sms", cmd_sms))
-    app.add_handler(CommandHandler("addpromo", cmd_addpromo))
-    app.add_handler(CommandHandler("delpromo", cmd_delpromo))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(ChatJoinRequestHandler(on_join_request))
     app.add_handler(CallbackQueryHandler(on_go, pattern=r"^go:"))
     app.add_handler(CallbackQueryHandler(on_vip_action, pattern=r"^vip:"))
-    app.add_handler(CallbackQueryHandler(on_gift_redeem_btn, pattern=r"^gift:redeem$"))
     app.add_handler(CallbackQueryHandler(on_lang, pattern=r"^lang:"))
     app.add_handler(CallbackQueryHandler(on_profile_answer, pattern=r"^(age|gender|height):"))
     app.add_handler(CallbackQueryHandler(on_package, pattern=r"^pkg:"))
-    app.add_handler(CallbackQueryHandler(on_promo_btn, pattern=r"^promo:ask$"))
     app.add_handler(CallbackQueryHandler(on_faq, pattern=r"^faq:"))
     app.add_handler(CallbackQueryHandler(on_send_testi_btn, pattern=r"^testi:send$"))
+    app.add_handler(CallbackQueryHandler(on_admin_dash, pattern=r"^adm:"))
     app.add_handler(CallbackQueryHandler(on_admin_decision, pattern=r"^(approve|reject):\d+$"))
     app.add_handler(CallbackQueryHandler(on_admin_quick_reply, pattern=r"^qrep:(wait|blur|less):\d+$"))
     app.add_handler(CallbackQueryHandler(on_admin_grant, pattern=r"^admgrant:(books|bundle):\d+$"))
