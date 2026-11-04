@@ -35,7 +35,8 @@ from telegram.ext import (
 
 import config
 import ocr
-from texts import AGE_CODES, CHOOSE_LANG, GENDER_CODES, GROUP_MOTIVATION_POSTS, HEIGHT_CODES, T
+import texts as _texts_mod
+from texts import AGE_CODES, CHOOSE_LANG, GENDER_CODES, HEIGHT_CODES, T
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -71,6 +72,80 @@ log = logging.getLogger("bookbot")
 for _noisy in ("httpx", "httpcore"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
+# texts.py ባይዘመንም እንኳ ImportError እንዳይመጣ እዚሁ ውስጥ የተዘጋጁ የግሩፕ ማነቃቂያ ጽሑፎች
+GROUP_MOTIVATION_POSTS = getattr(_texts_mod, "GROUP_MOTIVATION_POSTS", None) or [
+    "🔥 **የዕለቱ የቁመት እድገት ማስታወሻ!**\n\nዛሬ የመወጠር (Stretching) ልምምድዎን ሰርተዋል? አከርካሪዎ በየቀኑ በትክክለኛ ልምምድ ሲሳብ ለውጡ በሳምንታት ውስጥ መታየት ይጀምራል!\n\n👇 የዛሬውን ልምምድ ከጨረሱ ወይም ቁመትዎን ለመመዝገብ ከታች ያለውን አዝራር ይጫኑ፦",
+    "😴 **የእንቅልፍ እና የዕድገት ሆርሞን (HGH) ምስጢር!**\n\nሰውነታችን ከ 75% በላይ የሚሆነውን የዕድገት ሆርሞን የሚያመርተው ማታ በጥልቅ እንቅልፍ ወቅት ነው። ከመተኛትዎ በፊት ለ 5 ደቂቃ የአከርካሪ ማሳሳቢያ ልምምድ ሰርተው በጊዜ ይተኙ!\n\n👇 የዛሬውን ተከታታይ ልምምድዎን (Streak) አሁኑኑ ያስመዝግቡ፦",
+    "🥗 **አመጋገብ + ውሃ = ፈጣን የቁመት እድገት!**\n\nየአከርካሪ ዲስኮች በውሃ የተሞሉ ናቸው። በቀን በቂ ውሃ መጠጣት እና ፕሮቲን/ካልሲየም ያላቸው ምግቦችን መመገብ የልምምድዎን ውጤት በእጥፍ ያፈጥነዋል!\n\n👇 ዛሬ ልምምድ የሰሩ ከታች ያለውን አዝራር ይንኩ፦",
+    "🏆 **ስኬት የሚመጣው በተከታታይ ልምምድ (Consistency) ነው!**\n\nትላንት የጀመሩት ትንሽ ልምምድ ነገ ትልቅ የቁመት እና የበራስ መተማመን ለውጥ ያመጣል። አንድም ቀን እንዳያቋርጡ!\n\n👇 የዛሬውን ቼክ-ሊስት እና የቁመት ለውጥዎን ለመመዝገብ ከታች ይጫኑ፦",
+]
+
+FALLBACK_TEXTS = {
+    "analysis_young": "አስደናቂ ዜና! በዚህ የእድሜ ክልል የእድገት ፕሌቶችዎ እና የዕድገት ሆርሞን (HGH) ከፍተኛ ንቁ ደረጃ ላይ ይገኛሉ።\n📈 ከ 8 እስከ 12 CM የቁመት መጨመር ከፍተኛ እድል አለዎት!",
+    "analysis_adult": "መልካም ዜና! በዚህ የእድሜ ክልል የአከርካሪ መለጠጥ (Spinal Decompression) እና የአቋም ማስተካከያ ልምምዶችን በመጠቀም\n📈 ከ 5 እስከ 8 CM ተጨማሪ ቁመት ማግኘት ይችላሉ!",
+    "btn_upgrade": "⬆️ ወደ ቪዲዮ ግሩፕ አሳድግ ({price} ብር ብቻ)",
+    "btn_buy_gift": "🎁 ለጓደኛ በስጦታ ግዛ",
+    "btn_redeem_gift": "🔑 የስጦታ ኮድ አለኝ",
+    "gift_menu_text": "🎁 **ለጓደኛ ወይም ለቤተሰብ ስጦታ ይግዙ!**\n\nክፍያው እንደተረጋገጠ ልዩ የስጦታ ኮድ (`GIFT-XXXX`) ይሰጥዎታል። ኮዱን ለጓደኛዎ ሲልኩለት ወዲያውኑ ወደ ልዩ ግሩፑ መግባት ይችላል! 👇",
+    "btn_gift_books": "🎁 ስጦታ፦ መጽሐፍ ብቻ ({price} ብር)",
+    "btn_gift_bundle": "🎁👑 ስጦታ፦ መጽሐፍ + ቪዲዮ ({price} ብር)",
+    "gift_code_created": "🎉 **የስጦታ ግዢዎ ተረጋግጧል!**\n\n🔑 የስጦታ ኮድ፦ `{code}`\n📦 ጥቅል፦ {pkg_name}\n\nይህን ኮድ ለጓደኛዎ ይላኩለት፤ ቦቱ ውስጥ **«🔑 የስጦታ ኮድ አለኝ»** የሚለውን ሲነካ ወዲያውኑ የግሩፑ ሊንክ ይከፈትለታል!",
+    "ask_gift_code": "🔑 እባክዎ የተሰጠዎትን የስጦታ ኮድ (ለምሳሌ፦ `GIFT-1234`) ይጻፉ 👇",
+    "gift_redeemed_ok": "🎉 እንኳን ደስ አለዎት! የስጦታ ኮዱ ትክክል ነው፤ የግሩፑ መግቢያ ሊንክ ከታች ተልኮልዎታል! 👇",
+    "gift_invalid": "❌ ይህ የስጦታ ኮድ ትክክል አይደለም ወይም ቀድሞ ጥቅም ላይ ውሏል።",
+    "social_proof_line": "\n\n🔥 ዛሬ ብቻ {today_count} ወጣቶች ወደ ግሩፑ ተቀላቅለዋል! (የመጨረሻው ከ {mins_ago} ደቂቃ በፊት)",
+    "fast_bonus_line": "\n⏳ በ {rem_hr} ውስጥ ከከፈሉ የ VIP ግሩፕ ልዩ ድጋፍ ያገኛሉ!",
+    "fast_bonus_expired": "",
+    "btn_promo": "🎟️ የቅናሽ ኮድ አለኝ (Promo Code)",
+    "ask_promo": "🎟️ እባክዎ ያለዎትን የቅናሽ ኮድ ይጻፉ 👇",
+    "promo_ok": "🎉 የ {disc} ብር ቅናሽ ተደርጎልዎታል! አዲሱ ዋጋ፦ {new_price} ብር።",
+    "promo_invalid": "❌ ይህ የቅናሽ ኮድ ትክክል አይደለም።",
+    "faq_time_btn": "❓ በስንት ደቂቃ ወደ ግሩፑ እገባለሁ?",
+    "faq_time_ans": "⏱ የደረሰኝ ፎቶ እንደላኩ ከ 1 እስከ 3 ደቂቃ ውስጥ ተረጋግጦ ወዲያውኑ ወደ Private ግሩፑ የሚያስገባዎት ሊንክ እዚሁ ይደርስዎታል!",
+    "faq_other_btn": "❓ በሌላ ሰው ስልክ/ባንክ መክፈል ይቻላል?",
+    "faq_other_ans": "✅ አዎ ይቻላል! በማንኛውም ሰው ስልክ ወይም ባንክ ከፍለው የደረሰኙን ፎቶ እዚህ መላክ ይችላሉ።",
+    "ussd_telebirr_btn": "📲 የቴሌብር USSD (*127#) ቅዳ",
+    "ussd_cbe_btn": "🏦 የ CBE USSD (*889#) ቅዳ",
+    "voice_caption": "🎧 እንዴት በቀላሉ እንደሚከፍሉና ወደ ግሩፑ ወዲያውኑ እንደሚገቡ ይህን ድምጽ ያዳምጡ።",
+    "bad_photo_quality": "⚠️ የላኩት ፎቶ በጣም የጨለመ ወይም ጥራቱ አነስተኛ ስለሆነ አይነበብም። እባክዎ ግልጽ Screenshot ይላኩ። 👇",
+    "status_checking": "🔵 ሁኔታ፦ አድሚኑ ደረሰኝዎን እያረጋገጠ ነው...\n⏳ እባክዎ ጥቂት ይጠብቁን። 🙏",
+    "status_approved": "🟢 ሁኔታ፦ ክፍያዎ ተረጋግጧል! የግሩፕ መግቢያ ሊንክዎ ከታች ተልኳል 🎉",
+    "status_rejected": "🔴 ሁኔታ፦ ደረሰኙ አልተረጋገጠም። እባክዎ ትክክለኛ ደረሰኝ ይላኩ።",
+    "qreply_wait": "⏳ ሰላም! ደረሰኝዎ ደርሶናል፣ እያረጋገጥን ስለሆነ እባክዎ ጥቂት ደቂቃዎች ይጠብቁን። 🙏",
+    "qreply_blur": "🔍 ሰላም! የላኩት የደረሰኝ ፎቶ በደንብ አይነበብም። እባክዎ ግልጽ ስክሪንሾት እንደገና ይላኩ። 👇",
+    "qreply_less": "💰 ሰላም! የላኩት የገንዘብ መጠን ከመረጡት ጥቅል ዋጋ ያነሰ ነው። እባክዎ ቀሪውን አሟልተው ይላኩ። 👇",
+    "vip_welcome": "👑 እንኳን ደህና መጡ ክቡር አባላችን {name}!\n\n📦 የገቡበት ግሩፕ፦ {pkg_name}\n🔥 የልምምድ ተከታታይነት (Streak)፦ {streak} ቀን\n📏 የቁመት ክትትል፦ {height_progress}\n🎁 በእርስዎ ሊንክ የገዙ ጓደኞች፦ {ref_count}/{ref_target}\n\nከታች ባሉት አዝራሮች የዕለቱን ልምምድና ቁመትዎን ይመዝግቡ 👇",
+    "btn_streak": "✅ የዛሬውን ልምምድ ሰርቻለሁ (🔥 {streak} ቀን)",
+    "streak_already": "⚡ የዛሬውን ልምምድ አስቀድመው መዝግበዋል! ነገ ተመልሰው ይመዝግቡ (🔥 {streak} ቀን)።",
+    "streak_up": "🔥 ምርጥ ነው! ለ {streak} ተከታታይ ቀናት ልምምድዎን ሰርተዋል! በግሩፑም ላይ ቀጥሉበት!",
+    "streak_7_secret": "🏆 እንኳን ደስ አለዎት! 7 ተከታታይ ቀናት ስላጠናቀቁ ልዩ ምስጢር ተከፍቶልዎታል፦\n💡 ማታ ከመተኛትዎ በፊት ለ 2 ደቂቃ በባር ላይ መንጠልጠል (Dead Hang) የአከርካሪ ዲስኮች በፍጥነት እንዲለጠጡ ያደርጋል! 🚀",
+    "height_none": "ገና አልተመዘገበም",
+    "btn_log_height": "📏 የዛሬ ቁመቴን መዝግብ (Height Log)",
+    "ask_log_height": "📏 እባክዎ አሁን ያሉበትን ትክክለኛ ቁመት በሴንቲሜትር (በቁጥር ብቻ፣ ለምሳሌ፦ 170) ይጻፉ 👇",
+    "log_height_first": "✅ የመጀመሪያ ቁመትዎ ({cm} CM) ተመዝግቧል! ከሳምንታት ልምምድ በኋላ ለውጥዎን እዚህ ይመዝግቡ። 💪",
+    "log_height_gain": "🎉 እንኳን ደስ አለዎት! ከጀመሩ ጀምሮ +{diff} CM ጨምረዋል! ({start} CM ➔ {cm} CM) 🚀",
+    "log_height_same": "✅ የዛሬ ቁመትዎ ({cm} CM) ተመዝግቧል። ልምምድዎን በግሩፑ መመሪያ መሰረት ይቀጥሉ! 💪",
+    "log_height_invalid": "⚠️ እባክዎ ትክክለኛ ቁመት በቁጥር ብቻ ይጻፉ (ከ 100 እስከ 250 CM፣ ለምሳሌ፦ 168)።",
+    "card_caption": "🏆 እንኳን ደስ አለዎት! ይህ የእርስዎ ኦፊሴላዊ የቁመት እድገት ሰርተፊኬት ነው! 🎉",
+    "btn_vip_files": "🔗 የ Private ግሩፕ መግቢያ ሊንክ ላክልኝ",
+    "btn_vip_restart": "🔄 ጥያቄዎቹን ከመጀመሪያ ለማየት",
+    "btn_refer": "🎁 ጓደኛ ጋብዘው ሽልማት ያግኙ ({count}/{target})",
+    "btn_share_tg": "📤 ሊንኩን ለጓደኞቼ አጋራ",
+    "refer_text": "🎁 ልዩ የሽልማት ፕሮግራም!\n👉 {link}\n\n📌 በእርስዎ ሊንክ የገቡ {target} ጓደኞችዎ ከሁለቱ ጥቅሎች አንዱን ሲገዙ **የ50 ብር ሽልማት** ያገኛሉ!\n📊 የገዙ ሰዎች፦ {count}/{target} (የቀረዎት፦ {rem} ሰው)",
+    "refer_progress": "🎉 በእርስዎ ሊንክ የገባ ጓደኛዎ ጥቅል ገዝቷል! ({count}/{target} — የቀረዎት {rem} ሰው ብቻ!)",
+    "refer_won": "🏆 እንኳን ደስ አለዎት! በእርስዎ ሊንክ {target} ሰዎች ስለገዙ የሽልማት አሸናፊ ሆነዋል! 🎉",
+    "coach_d3": "🏋️‍♂️ ሰላም {name}! ግሩፑን ከተቀላቀሉ 3 ቀን ሆነዎት። የዛሬውን ልምምድዎን ከታች ይመዝግቡ! 💪",
+    "coach_d7": "🥗 ሰላም {name}! 1 ሳምንት ተቆጠረ! ልምምዱን ከ8 ሰዓት እንቅልፍ ጋር አቀናጅተው ይቀጥሉ! 😴🔥",
+    "coach_d15": "🚀 ሰላም {name}! 15 ቀናት አለፉ! አንድም ቀን ሳያቋርጡ ይቀጥሉ! 🏆",
+    "coach_d30": "🎉 እንኳን ደስ አለዎት {name}! 30 ቀን አጠናቀቁ! ከታች ባለው አዝራር ውጤትዎን ያጋሩን! 👇",
+    "btn_send_testi": "✍️ ለውጤን / ምስክርነቴን ልላክ",
+    "ask_testi": "✍️ እባክዎ ያገኙትን የቁመት ለውጥ (በ CM) እና አስተያየትዎን ይጻፉልን 👇",
+    "testi_thanks": "🙏 ከልብ እናመሰግናለን! ምስክርነትዎ ለአድሚኑ ደርሷል።",
+    "followup_1": "👋 ሰላም {name}፣ ቅድም የጀመሩትን የቁመት ማሳደጊያ ፕሮግራም ለመጨረስ አሁኑኑ ይጫኑ፦\n👉 /start",
+    "followup_2": "🔥 ሰላም {name}፣ የሰውነትዎ የዕድገት እድል ሳይዘጋ አሁኑኑ ወደ ልዩ ግሩፓችን ይቀላቀሉ፦\n👉 /start",
+    "followup_3": "⏳ የመጨረሻ ማሳሰቢያ ለ {name}! ለለውጥ ዝግጁ ከሆኑ አሁኑኑ ይጀምሩ፦\n👉 /start",
+}
+
 
 def check_texts():
     config.PRICES.setdefault("upgrade", max(100, config.PRICES.get("bundle", 597) - config.PRICES.get("books", 397)))
@@ -79,6 +154,8 @@ def check_texts():
     if "upgrade" not in getattr(config, "CHANNELS", {}):
         config.CHANNELS["upgrade"] = config.CHANNELS.get("bundle", 0)
     for lang, table in T.items():
+        for k, v in FALLBACK_TEXTS.items():
+            table.setdefault(k, v)
         for k, v in T["am"].items():
             table.setdefault(k, v)
 
@@ -289,8 +366,12 @@ def referral_link_for(user_id):
 
 
 # ---------------------------------------------------------------- Group Motivation & Deep-Link Helpers
+def channel_for(package):
+    chans = getattr(config, "CHANNELS", {}) or {}
+    return int((chans.get("upgrade") or chans.get("bundle") or 0) if package == "upgrade" else (chans.get(package) or 0))
+
+
 def group_deeplink_kb():
-    """በ Private ግሩፑ ላይ ከሚለቀቁ ፖስቶች ስር የሚታዩ የ1-ንኪ አዝራሮች (ቀጥታ ወደ ቦቱ ይወስዳሉ)"""
     uname = BOT_USERNAME or "bot"
     return InlineKeyboardMarkup(
         [
@@ -301,7 +382,6 @@ def group_deeplink_kb():
 
 
 async def post_motivation_to_groups(bot):
-    """ቦቱ በራሱ የተለያዩ አነቃቂ ጽሑፎችን እየመረጠ ወደ Private ግሩፖቹ ይለቃል"""
     global LAST_GROUP_POST_TS, GROUP_POST_IDX
     LAST_GROUP_POST_TS = time.time()
     if not GROUP_MOTIVATION_POSTS:
@@ -321,7 +401,6 @@ async def post_motivation_to_groups(bot):
 
 
 async def announce_in_user_group(bot, user_id, msg_text):
-    """አንድ አባል ቁመት ሲጨምር ወይም Streak ሲሞላ በግሩፑ ውስጥ ለሌሎች ማነቃቂያ እንዲሆን ይለጥፋል"""
     best = user_best_package(user_id)
     if not best:
         return
@@ -523,12 +602,21 @@ def b_offer(context, user, lang):
     r = dict(rows[0]) if rows else {}
     age_code = r.get("age")
     analysis_key = "analysis_adult" if age_code == "a4" else "analysis_young"
-    text = T[lang]["result"].format(
-        height=answer_label(lang, "heights", HEIGHT_CODES, r.get("height")),
-        age=answer_label(lang, "ages", AGE_CODES, age_code),
-        gender=answer_label(lang, "genders", GENDER_CODES, r.get("gender")),
-        custom_analysis=T[lang].get(analysis_key, T["am"][analysis_key]),
-    )
+    custom_analysis = T[lang].get(analysis_key, FALLBACK_TEXTS[analysis_key])
+    raw_res = T[lang]["result"]
+    if "{custom_analysis}" in raw_res:
+        text = raw_res.format(
+            height=answer_label(lang, "heights", HEIGHT_CODES, r.get("height")),
+            age=answer_label(lang, "ages", AGE_CODES, age_code),
+            gender=answer_label(lang, "genders", GENDER_CODES, r.get("gender")),
+            custom_analysis=custom_analysis,
+        )
+    else:
+        text = raw_res.format(
+            height=answer_label(lang, "heights", HEIGHT_CODES, r.get("height")),
+            age=answer_label(lang, "ages", AGE_CODES, age_code),
+            gender=answer_label(lang, "genders", GENDER_CODES, r.get("gender")),
+        )
     return text, one_button(lang, "btn_video", "video", back="q3")
 
 
@@ -661,7 +749,12 @@ def b_pay(context, user, lang):
     disc = int(s.get("discount") or 0)
     final_price = max(10, config.PRICES[pkg] - disc)
     disc_note = f"(🎟️ -{disc} ብር ቅናሽ!)" if disc > 0 else ""
-    text = T[lang]["pay"].format(price=final_price, discount_note=disc_note, accounts=config.PAYMENT_ACCOUNTS, extra_footer=get_social_and_bonus_footer(user.id, lang))
+    raw_pay = T[lang]["pay"]
+    extra_footer = get_social_and_bonus_footer(user.id, lang)
+    if "{discount_note}" in raw_pay:
+        text = raw_pay.format(price=final_price, discount_note=disc_note, accounts=config.PAYMENT_ACCOUNTS, extra_footer=extra_footer)
+    else:
+        text = raw_pay.format(price=f"{final_price} {disc_note}".strip(), accounts=config.PAYMENT_ACCOUNTS) + extra_footer
     st_set(user.id, step="await_photo", pay_started=s.get("pay_started") or time.time())
     back_target = "gift" if pkg.startswith("gift_") else ("vip" if pkg == "upgrade" else "pkg")
     return text, InlineKeyboardMarkup(account_copy_rows(lang, has_promo=bool(disc)) + [[back_button(lang, back_target)]])
@@ -826,7 +919,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # ከ Private ግሩፑ ላይ ባለው አዝራር ቀጥታ ወደ ቦቱ ሲገቡ (Deep-Link Actions)
     if user_best_package(u.id):
         if deep_action == "streak":
             _, _, msg_txt = await process_user_streak(context.bot, u, lang)
@@ -1140,9 +1232,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(T[lang]["need_photo" if ready_to_pay(s) else "hint"])
 
 
-# ---------------------------------------------------------------- Admin Commands (/postgroup, /find, /addpromo, etc.)
+# ---------------------------------------------------------------- Admin Commands
 async def cmd_postgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """አድሚኑ ወዲያውኑ ወደ Private ግሩፖቹ የማነቃቂያ ፖስትና የStreak/ቁመት አዝራሮችን ለመልቀቅ ሲፈልግ"""
     if update.effective_user.id != ADMIN_ID:
         return
     sent = await post_motivation_to_groups(context.bot)
@@ -1477,13 +1568,7 @@ async def on_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(f"❌ መላክ አልተቻለም፦ {e}")
 
 
-def channel_for(package):
-    chans = getattr(config, "CHANNELS", {}) or {}
-    return int((chans.get("upgrade") or chans.get("bundle") or 0) if package == "upgrade" else (chans.get(package) or 0))
-
-
 async def send_invite(bot, order):
-    """ለደንበኛው ወደ Private Group/Channel የሚያስገባ የ1-ጊዜ ሊንክ ብቻ ይልካል"""
     uid = order["user_id"]
     lang = get_lang(uid)
     chan = channel_for(order["package"])
@@ -1887,17 +1972,15 @@ async def post_init(app):
         await app.bot.set_my_commands(
             user_cmds + [
                 BotCommand("pending", "⏳ ያልተረጋገጡ ደረሰኞች"),
-                BotCommand("postgroup", "🔥 ወደ ግሩፑ ማነቃቂያ ፖስት ልቀቅ"),
-                BotCommand("find", "🔎 ደንበኛ መፈለጊያ (በስም/ID)"),
-                BotCommand("stats", "📊 ስታቲስቲክስ እና ማስታወቂያዎች"),
-                BotCommand("users", "👥 የተጠቃሚዎች ዝርዝር"),
-                BotCommand("broadcast", "📢 የጅምላ መልዕክት መላኪያ"),
-                BotCommand("addpromo", "🎟️ የቅናሽ ኮድ ፍጠር"),
-                BotCommand("delpromo", "🗑️ የቅናሽ ኮዶች እይ/አጥፋ"),
-                BotCommand("backup", "💾 ዳታቤዝ ባክአፕ አውርድ"),
+                BotCommand("postgroup", "🔥 ወደ ግሩፖቹ ማነቃቂያ ፖስት ልቀቅ"),
+                BotCommand("find", "🔎 ደንበኛ መፈለጊያ"),
+                BotCommand("stats", "📊 ስታቲስቲክስ"),
+                BotCommand("users", "👥 ተጠቃሚዎች"),
+                BotCommand("broadcast", "📢 ጅምላ መልዕክት"),
+                BotCommand("addpromo", "🎟️ ቅናሽ ኮድ"),
+                BotCommand("backup", "💾 ባክአፕ"),
                 BotCommand("sms", "⚡ የባንክ SMS መዝግብ"),
-                BotCommand("resend", "🔗 የግሩፕ ሊንክ እንደገና ላክ"),
-                BotCommand("test_followup", "🔍 የማስታወሻ መፈተሻ"),
+                BotCommand("resend", "🔗 የግሩፕ ሊንክ"),
             ],
             scope=BotCommandScopeChat(ADMIN_ID),
         )
