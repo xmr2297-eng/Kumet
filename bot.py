@@ -69,7 +69,6 @@ DB_PATH = Path(os.getenv("DB_PATH") or (config.BASE / "bot.db"))
 DB_WARN = None if DB_PATH_SET else "⚠️ DB_PATH አልተሞላም፤ Railway ላይ Volume (/data) እና DB_PATH=/data/bot.db ያስቀምጡ።"
 
 MAX_PENDING_PER_USER = getattr(config, "MAX_PENDING_PER_USER", 3)
-REFERRAL_TARGET = getattr(config, "REFERRAL_TARGET", 5)
 COACH_DAYS = getattr(config, "COACH_DAYS", (3, 7, 15, 30))
 BACKUP_INTERVAL_HOURS = getattr(config, "BACKUP_INTERVAL_HOURS", 24)
 GROUP_POST_HOURS = getattr(config, "GROUP_POST_HOURS", 8)
@@ -115,7 +114,7 @@ FALLBACK_TEXTS = {
     "qreply_wait": "⏳ ሰላም! ደረሰኝዎ ደርሶናል፣ እያረጋገጥን ስለሆነ እባክዎ ጥቂት ደቂቃዎች ይጠብቁን። 🙏",
     "qreply_blur": "🔍 ሰላም! የላኩት የደረሰኝ ፎቶ በደንብ አይነበብም። እባክዎ ግልጽ ስክሪንሾት እንደገና ይላኩ። 👇",
     "qreply_less": "💰 ሰላም! የላኩት የገንዘብ መጠን ከመረጡት ጥቅል ዋጋ ያነሰ ነው። እባክዎ ቀሪውን አሟልተው ይላኩ። 👇",
-    "vip_welcome": "👑 እንኳን ደህና መጡ ክቡር አባላችን {name}!\n\n📦 የገቡበት ግሩፕ፦ {pkg_name}\n🔥 የልምምድ ተከታታይነት (Streak)፦ {streak} ቀን\n📏 የቁመት ክትትል፦ {height_progress}\n🎁 በእርስዎ ሊንክ የገዙ ጓደኞች፦ {ref_count}/{ref_target}\n\nከታች ባሉት አዝራሮች የዕለቱን ልምምድና ቁመትዎን ይመዝግቡ 👇",
+    "vip_welcome": "👑 እንኳን ደህና መጡ ክቡር አባላችን {name}!\n\n📦 የገቡበት ግሩፕ፦ {pkg_name}\n🔥 የልምምድ ተከታታይነት (Streak)፦ {streak} ቀን\n📏 የቁመት ክትትል፦ {height_progress}\n\nከታች ባሉት አዝራሮች የዕለቱን ልምምድና ቁመትዎን ይመዝግቡ 👇",
     "btn_streak": "✅ የዛሬውን ልምምድ ሰርቻለሁ (🔥 {streak} ቀን)",
     "streak_already": "⚡ የዛሬውን ልምምድ አስቀድመው መዝግበዋል! ነገ ተመልሰው ይመዝግቡ (🔥 {streak} ቀን)።",
     "streak_up": "🔥 ምርጥ ነው! ለ {streak} ተከታታይ ቀናት ልምምድዎን ሰርተዋል! በግሩፑም ላይ ቀጥሉበት!",
@@ -130,11 +129,6 @@ FALLBACK_TEXTS = {
     "card_caption": "🏆 እንኳን ደስ አለዎት! ይህ የእርስዎ ኦፊሴላዊ የቁመት እድገት ሰርተፊኬት ነው! 🎉",
     "btn_vip_files": "🔗 የ Private ግሩፕ መግቢያ ሊንክ ላክልኝ",
     "btn_vip_restart": "🔄 ጥያቄዎቹን ከመጀመሪያ ለማየት",
-    "btn_refer": "🎁 ጓደኛ ጋብዘው ሽልማት ያግኙ ({count}/{target})",
-    "btn_share_tg": "📤 ሊንኩን ለጓደኞቼ አጋራ",
-    "refer_text": "🎁 ልዩ የሽልማት ፕሮግራም!\n👉 {link}\n\n📌 በእርስዎ ሊንክ የገቡ {target} ጓደኞችዎ ከሁለቱ ጥቅሎች አንዱን ሲገዙ **የ50 ብር ሽልማት** ያገኛሉ!\n📊 የገዙ ሰዎች፦ {count}/{target} (የቀረዎት፦ {rem} ሰው)",
-    "refer_progress": "🎉 በእርስዎ ሊንክ የገባ ጓደኛዎ ጥቅል ገዝቷል! ({count}/{target} — የቀረዎት {rem} ሰው ብቻ!)",
-    "refer_won": "🏆 እንኳን ደስ አለዎት! በእርስዎ ሊንክ {target} ሰዎች ስለገዙ የሽልማት አሸናፊ ሆነዋል! 🎉",
     "coach_d3": "🏋️‍♂️ ሰላም {name}! ግሩፑን ከተቀላቀሉ 3 ቀን ሆነዎት። የዛሬውን ልምምድዎን ከታች ይመዝግቡ! 💪",
     "coach_d7": "🥗 ሰላም {name}! 1 ሳምንት ተቆጠረ! ልምምዱን ከ8 ሰዓት እንቅልፍ ጋር አቀናጅተው ይቀጥሉ! 😴🔥",
     "coach_d15": "🚀 ሰላም {name}! 15 ቀናት አለፉ! አንድም ቀን ሳያቋርጡ ይቀጥሉ! 🏆",
@@ -300,13 +294,9 @@ def mark_funnel(user_id, screen_name):
         execute("UPDATE users SET offer_seen_at = COALESCE(offer_seen_at, ?) WHERE user_id=?", (time.time(), user_id))
 
 
-def ensure_user(u, referrer_id=None, ad_source=None):
-    is_new = not fetch("SELECT 1 FROM users WHERE user_id=?", (u.id,))
+def ensure_user(u, ad_source=None):
     execute("INSERT OR IGNORE INTO users(user_id, name, started_at, followup_stage, bot_blocked) VALUES(?, ?, ?, 0, 0)", (u.id, u.full_name, time.time()))
     execute("UPDATE users SET name=?, username=?, bot_blocked=0 WHERE user_id=?", (u.full_name, getattr(u, "username", None), u.id))
-    if is_new and referrer_id and referrer_id != u.id:
-        if fetch("SELECT 1 FROM users WHERE user_id=?", (referrer_id,)):
-            execute("UPDATE users SET referred_by=? WHERE user_id=? AND referred_by IS NULL", (referrer_id, u.id))
     if ad_source:
         execute("UPDATE users SET ad_source=COALESCE(ad_source, ?) WHERE user_id=?", (ad_source[:30], u.id))
 
@@ -345,10 +335,6 @@ def st_clear(user_id):
 def get_lang(user_id):
     rows = fetch("SELECT lang FROM users WHERE user_id=?", (user_id,))
     return rows[0]["lang"] if rows and rows[0]["lang"] in T else "am"
-
-
-def referral_link_for(user_id):
-    return f"https://t.me/{BOT_USERNAME or 'bot'}?start=ref_{user_id}"
 
 
 # ---------------------------------------------------------------- Group Motivation & Deep-Link Helpers
@@ -618,12 +604,6 @@ def b_proof(context, user, lang):
     return text, one_button(lang, "btn_decided", "pkg", back="video")
 
 
-def get_ref_stats(user_id):
-    rows = fetch("SELECT COALESCE(ref_paid_count, 0) AS c FROM users WHERE user_id=?", (user_id,))
-    cnt = rows[0]["c"] if rows else 0
-    return cnt, REFERRAL_TARGET, max(0, REFERRAL_TARGET - cnt)
-
-
 def b_pkg(context, user, lang):
     p = config.PRICES
     text = config.OFFER[lang].format(price=p["books"], price_bundle=p["bundle"], accounts="") + get_social_and_bonus_footer(user.id, lang)
@@ -648,13 +628,14 @@ def format_height_progress(user_id, lang):
 
 def b_vip(context, user, lang):
     best = user_best_package(user.id) or "books"
-    cnt, target, _ = get_ref_stats(user.id)
     h_prog = format_height_progress(user.id, lang)
     u_rows = fetch("SELECT COALESCE(streak_count, 0) AS sc FROM users WHERE user_id=?", (user.id,))
     streak = u_rows[0]["sc"] if u_rows else 0
-    text = T[lang]["vip_welcome"].format(
-        name=user.first_name or "", pkg_name=PKG_LABEL.get(best, best), streak=streak, height_progress=h_prog, ref_count=cnt, ref_target=target
+    raw_vip = T[lang]["vip_welcome"]
+    text = raw_vip.format(
+        name=user.first_name or "", pkg_name=PKG_LABEL.get(best, best), streak=streak, height_progress=h_prog, ref_count=0, ref_target=0
     )
+    text = "\n".join(line for line in text.splitlines() if "በእርስዎ ሊንክ" not in line and "ጓደኞች፦" not in line)
     rows = [
         [InlineKeyboardButton(T[lang]["btn_streak"].format(streak=streak), callback_data="vip:streak")],
         [InlineKeyboardButton(T[lang]["btn_log_height"], callback_data="vip:log_h")],
@@ -662,25 +643,8 @@ def b_vip(context, user, lang):
     ]
     if best == "books":
         rows.append([InlineKeyboardButton(T[lang]["btn_upgrade"].format(price=config.PRICES.get("upgrade", 200)), callback_data="pkg:upgrade")])
-    rows.append([InlineKeyboardButton(T[lang]["btn_refer"].format(count=cnt, target=target), callback_data="go:refer")])
     rows.append([InlineKeyboardButton(T[lang]["btn_vip_restart"], callback_data="go:lang")])
     return text, InlineKeyboardMarkup(rows)
-
-
-def b_refer(context, user, lang):
-    cnt, target, rem = get_ref_stats(user.id)
-    link = referral_link_for(user.id)
-    text = T[lang]["refer_text"].format(link=link, count=cnt, target=target, rem=rem)
-    share_url = f"https://t.me/share/url?url={urllib.parse.quote(link)}&text={urllib.parse.quote('🔥 በተፈጥሯዊ መንገድ ቁመት ለመጨመር የሚረዳ ምርጥ የቴሌግራም ቦት!')}"
-    back_target = "vip" if user_best_package(user.id) else "pkg"
-    kb = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton(T[lang]["btn_share_tg"], url=share_url)],
-            [InlineKeyboardButton("📋 ሊንኩን ቅዳ (Copy Link)", copy_text=CopyTextButton(text=link))],
-            [back_button(lang, back_target)],
-        ]
-    )
-    return text, kb
 
 
 def account_copy_rows(lang="am"):
@@ -716,7 +680,7 @@ def b_pay(context, user, lang):
 BUILD = {
     "lang": b_lang, "welcome": b_welcome, "q1": b_q1, "q2": b_q2, "q3": b_q3,
     "offer": b_offer, "video": b_video, "proof": b_proof, "pkg": b_pkg, "pay": b_pay,
-    "vip": b_vip, "refer": b_refer,
+    "vip": b_vip,
 }
 
 
@@ -853,19 +817,17 @@ async def process_user_streak(bot, user, lang):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     u = update.effective_user
-    referrer_id = ad_source = deep_action = None
+    ad_source = deep_action = None
     if context.args:
         arg = context.args[0]
         if arg in ("streak", "log_h"):
             deep_action = arg
-        elif arg.startswith("ref_") and arg[4:].isdigit():
-            referrer_id, ad_source = int(arg[4:]), "referral"
         elif arg.startswith("src_"):
             ad_source = arg[4:].lower()
-        else:
+        elif not arg.startswith("ref_"):
             ad_source = arg.lower()
 
-    ensure_user(u, referrer_id=referrer_id, ad_source=ad_source)
+    ensure_user(u, ad_source=ad_source)
     st_clear(u.id)
     lang = get_lang(u.id)
     try:
@@ -889,11 +851,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     execute("UPDATE users SET started_at=?, followup_stage=0, bot_blocked=0 WHERE user_id=?", (time.time(), u.id))
     await show("lang", context, update.effective_chat.id, u)
-
-
-async def cmd_refer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ensure_user(update.effective_user)
-    await show("refer", context, update.effective_chat.id, update.effective_user)
 
 
 async def on_vip_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1240,8 +1197,7 @@ async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 **ደንበኛ፦** {u['name']}{uname} (`{uid}`)\n"
             f"🌐 **ምንጭ፦** {u['ad_source'] or 'ቀጥታ'} | 📊 {u['height']}/{u['age']}/{u['gender']}\n"
             f"📦 **ግሩፕ፦** {PKG_LABEL.get(best, 'አልገባም')}\n"
-            f"📏 **ቁመት፦** {format_height_progress(uid, 'am')} | 🔥 Streak: {u['streak_count'] or 0}\n"
-            f"🎁 **ሪፈራል፦** {u['ref_paid_count'] or 0}/{REFERRAL_TARGET}"
+            f"📏 **ቁመት፦** {format_height_progress(uid, 'am')} | 🔥 Streak: {u['streak_count'] or 0}"
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("📕 መጽሐፍ ግሩፕ ስጥ", callback_data=f"admgrant:books:{uid}"), InlineKeyboardButton("👑 VIP ግሩፕ ስጥ", callback_data=f"admgrant:bundle:{uid}")]])
         m = await update.message.reply_text(info, reply_markup=kb)
@@ -1319,7 +1275,7 @@ async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_db_backup(context.bot)
 
 
-# ---------------------------------------------------------------- Auto-Approve SMS & Referrals
+# ---------------------------------------------------------------- Auto-Approve SMS
 def extract_tx_ids(text: str):
     candidates = re.findall(r"\b(?:FT[A-Z0-9]{8,14}|[A-Z0-9]{10,16})\b", text.upper())
     return [c for c in candidates if any(ch.isdigit() for ch in c) and any(ch.isalpha() for ch in c)]
@@ -1366,37 +1322,6 @@ async def try_match_pending_with_sms(bot, specific_order_id=None, ocr_text=""):
                     await deliver_approved_order(bot, dict(order), auto_sms=sms["tx_id"])
                     return True
     return False
-
-
-async def credit_referrer_on_purchase(bot, buyer_id, package):
-    if package not in ("books", "bundle"):
-        return
-    rows = fetch("SELECT referred_by, COALESCE(ref_credited, 0) AS credited FROM users WHERE user_id=?", (buyer_id,))
-    if not rows or not rows[0]["referred_by"] or rows[0]["credited"]:
-        return
-    referrer_id = rows[0]["referred_by"]
-    if not execute_rc("UPDATE users SET ref_credited=1 WHERE user_id=? AND COALESCE(ref_credited,0)=0", (buyer_id,)):
-        return
-    execute("UPDATE users SET ref_paid_count = COALESCE(ref_paid_count, 0) + 1 WHERE user_id=?", (referrer_id,))
-    ref_rows = fetch("SELECT name, username, lang, ref_paid_count, COALESCE(ref_rewarded, 0) AS rewarded FROM users WHERE user_id=?", (referrer_id,))
-    if not ref_rows:
-        return
-    ref_u = ref_rows[0]
-    cnt = ref_u["ref_paid_count"]
-    lang = ref_u["lang"] if ref_u["lang"] in T else "am"
-    if cnt >= REFERRAL_TARGET and not ref_u["rewarded"]:
-        execute("UPDATE users SET ref_rewarded=1 WHERE user_id=?", (referrer_id,))
-        try:
-            await bot.send_message(referrer_id, T[lang]["refer_won"].format(target=REFERRAL_TARGET))
-            m = await bot.send_message(ADMIN_ID, f"🏆 የሪፈራል አሸናፊ!\nደንበኛ፦ {ref_u['name']} (ID: {referrer_id}) — {cnt} ሰዎች አስገዝቷል!")
-            execute("INSERT OR REPLACE INTO support(msg_id, user_id) VALUES(?, ?)", (m.message_id, referrer_id))
-        except Exception:
-            pass
-    elif cnt < REFERRAL_TARGET:
-        try:
-            await bot.send_message(referrer_id, T[lang]["refer_progress"].format(count=cnt, target=REFERRAL_TARGET, rem=REFERRAL_TARGET - cnt))
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------- Admin Order Review & Private Group Invite
@@ -1562,7 +1487,6 @@ async def deliver_approved_order(bot, order, auto_sms=None):
     uid = order["user_id"]
     pkg = order["package"]
     await update_live_user_status(bot, order, "status_approved")
-    await credit_referrer_on_purchase(bot, uid, pkg)
 
     execute("UPDATE users SET bought_at=COALESCE(bought_at, ?), coach_stage=COALESCE(coach_stage, 0), max_funnel=6 WHERE user_id=?", (time.time(), uid))
     label = PKG_LABEL.get(pkg, pkg)
@@ -1676,7 +1600,7 @@ def get_users_page(page=0):
     total_pages = max(1, (total_users + limit - 1) // limit)
     rows = fetch(
         """
-        SELECT u.user_id, u.name, u.username, date(u.created) as created_date, COALESCE(u.ref_paid_count, 0) as refs,
+        SELECT u.user_id, u.name, u.username, date(u.created) as created_date,
            (SELECT package FROM orders WHERE user_id = u.user_id AND status = 'approved' ORDER BY id DESC LIMIT 1) as ap_pkg,
            (SELECT status FROM orders WHERE user_id = u.user_id AND status = 'pending' ORDER BY id DESC LIMIT 1) as pd_status
         FROM users u ORDER BY u.user_id DESC LIMIT ? OFFSET ?
@@ -1687,8 +1611,7 @@ def get_users_page(page=0):
     for i, r in enumerate(rows):
         sym = "✅👑" if r["ap_pkg"] in ("bundle", "upgrade") else ("✅📕" if r["ap_pkg"] == "books" else ("⏳" if r["pd_status"] == "pending" else "—"))
         uname = f" @{r['username']}" if r["username"] else ""
-        ref_tag = f" [🎁{r['refs']}]" if r["refs"] else ""
-        lines.append(f"{offset + i + 1}. {sym} {r['name']}{uname}{ref_tag} (ID: {r['user_id']}) - {r['created_date']}")
+        lines.append(f"{offset + i + 1}. {sym} {r['name']}{uname} (ID: {r['user_id']}) - {r['created_date']}")
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️", callback_data=f"upage:{page-1}"))
@@ -1904,7 +1827,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
             <tr class="border-b border-slate-800 text-slate-400 text-xs uppercase bg-slate-900/50">
               <th class="py-3.5 px-4">ደንበኛ</th>
               <th class="py-3.5 px-4">ሁኔታ / ጥቅል</th>
-              <th class="py-3.5 px-4">प्रोፋይል & ቁመት</th>
+              <th class="py-3.5 px-4">ፕሮፋይል & ቁመት</th>
               <th class="py-3.5 px-4">ምንጭ / ቀን</th>
               <th class="py-3.5 px-4 text-right">እርምጃ (Actions)</th>
             </tr>
@@ -2041,7 +1964,7 @@ async function loadStats() {
   document.getElementById('kpiUsers').textContent = d.total_users.toLocaleString();
   document.getElementById('kpiTodayUsers').textContent = `ዛሬ የገቡ፦ +${d.today_users} | ብሎክ፦ ${d.blocked_users}`;
   document.getElementById('kpiSales').textContent = d.total_sales.toLocaleString();
-  document.getElementById('kpiPkgSplit').textContent = `📕 መጽሐፍ: ${d.books_sales} | 👑 VIP: ${d.bundle_sales} | 🎁 Ref: ${d.referrals}`;
+  document.getElementById('kpiPkgSplit').textContent = `📕 መጽሐፍ: ${d.books_sales} | 👑 VIP: ${d.bundle_sales}`;
 
   const badge = document.getElementById('navPendingBadge');
   badge.textContent = d.pending_orders;
@@ -2182,7 +2105,7 @@ async function loadUsers() {
       <td class="py-3.5 px-4">${badge}</td>
       <td class="py-3.5 px-4 text-xs text-slate-300">
         <div>📏 ${u.height_prog}</div>
-        <div class="text-slate-400">🔥 Streak: ${u.streak} ቀን · 🎁 Ref: ${u.refs}</div>
+        <div class="text-slate-400">🔥 Streak: ${u.streak} ቀን</div>
       </td>
       <td class="py-3.5 px-4 text-xs text-slate-400">
         <div class="text-slate-300">${u.ad_source || 'ቀጥታ'}</div>
@@ -2310,7 +2233,6 @@ async def web_stats(request: web.Request):
     today_o = fetch("SELECT COUNT(*) AS n, COALESCE(SUM(price),0) AS rev FROM orders WHERE status='approved' AND date(created)=date('now')")[0]
     books_cnt = fetch("SELECT COUNT(*) AS n FROM orders WHERE status='approved' AND package='books'")[0]["n"]
     bundle_cnt = fetch("SELECT COUNT(*) AS n FROM orders WHERE status='approved' AND package IN ('bundle','upgrade')")[0]["n"]
-    refs_cnt = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(ref_credited,0)=1")[0]["n"]
 
     funnel = {
         "q": fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 1")[0]["n"],
@@ -2341,7 +2263,6 @@ async def web_stats(request: web.Request):
             "today_rev": today_o["rev"],
             "books_sales": books_cnt,
             "bundle_sales": bundle_cnt,
-            "referrals": refs_cnt,
             "funnel": funnel,
             "sources": [{"src": r["src"], "users": r["u_cnt"], "sales": r["o_cnt"], "rev": r["rev"]} for r in src_rows],
         }
@@ -2453,7 +2374,6 @@ async def web_users(request: web.Request):
                 "pkg": user_best_package(uid),
                 "height_prog": format_height_progress(uid, "am"),
                 "streak": u["streak_count"] or 0,
-                "refs": u["ref_paid_count"] or 0,
                 "ad_source": u["ad_source"] or "ቀጥታ",
                 "created": (u["created"] or "")[:10],
             }
@@ -2697,7 +2617,7 @@ async def post_init(app):
         BOT_USERNAME = (await app.bot.get_me()).username or ""
     except Exception:
         pass
-    user_cmds = [BotCommand("start", "🚀 ከመጀመሪያ ጀምር / VIP ገጽ"), BotCommand("refer", "🎁 ጓደኛ ጋብዘው ሽልማት ያግኙ")]
+    user_cmds = [BotCommand("start", "🚀 ከመጀመሪያ ጀምር / VIP ገጽ")]
     try:
         await app.bot.set_my_commands(user_cmds)
         await app.bot.set_my_commands(
@@ -2735,7 +2655,6 @@ def main():
     app = Application.builder().token(TOKEN).concurrent_updates(True).post_init(post_init).build()
     app.add_error_handler(on_error)
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("refer", cmd_refer))
     app.add_handler(CommandHandler(["admin", "panel", "stats"], cmd_admin))
     app.add_handler(CommandHandler("postgroup", cmd_postgroup))
     app.add_handler(CommandHandler("find", cmd_find))
