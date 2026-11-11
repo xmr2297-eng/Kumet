@@ -626,13 +626,11 @@ def get_ref_stats(user_id):
 
 def b_pkg(context, user, lang):
     p = config.PRICES
-    cnt, target, _ = get_ref_stats(user.id)
     text = config.OFFER[lang].format(price=p["books"], price_bundle=p["bundle"], accounts="") + get_social_and_bonus_footer(user.id, lang)
     kb = InlineKeyboardMarkup(
         [
             [InlineKeyboardButton(T[lang]["btn_books"].format(price=p["books"]), callback_data="pkg:books")],
             [InlineKeyboardButton(T[lang]["btn_bundle"].format(price=p["bundle"]), callback_data="pkg:bundle")],
-            [InlineKeyboardButton(T[lang]["btn_refer"].format(count=cnt, target=target), callback_data="go:refer")],
             [back_button(lang, "proof")],
         ]
     )
