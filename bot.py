@@ -1,16 +1,19 @@
 import asyncio
 import hashlib
+import hmac
 import io
+import json
 import logging
 import os
-import random
 import re
 import sqlite3
 import time
 import urllib.parse
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from aiohttp import web
 from dotenv import load_dotenv
 from telegram import (
     BotCommand,
@@ -35,8 +38,13 @@ from telegram.ext import (
 
 import config
 import ocr
-import texts as _texts_mod
-from texts import AGE_CODES, CHOOSE_LANG, GENDER_CODES, HEIGHT_CODES, T
+
+try:
+    import texts as _texts_mod
+    from texts import AGE_CODES, CHOOSE_LANG, GENDER_CODES, HEIGHT_CODES, T
+except ImportError:
+    import text as _texts_mod
+    from text import AGE_CODES, CHOOSE_LANG, GENDER_CODES, HEIGHT_CODES, T
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -49,6 +57,13 @@ try:
     ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
 except ValueError:
     raise SystemExit("ADMIN_ID ቁጥር ብቻ መሆን አለበት።")
+
+DASHBOARD_PASS = os.getenv("DASHBOARD_PASS", "").strip() or str(ADMIN_ID)
+PORT = int(os.getenv("PORT", "8080") or 8080)
+PUBLIC_URL = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+if PUBLIC_URL and not PUBLIC_URL.startswith("http"):
+    PUBLIC_URL = f"https://{PUBLIC_URL}"
+
 DB_PATH_SET = bool(os.getenv("DB_PATH"))
 DB_PATH = Path(os.getenv("DB_PATH") or (config.BASE / "bot.db"))
 DB_WARN = None if DB_PATH_SET else "⚠️ DB_PATH አልተሞላም፤ Railway ላይ Volume (/data) እና DB_PATH=/data/bot.db ያስቀምጡ።"
@@ -62,6 +77,8 @@ FAST_BONUS_HOURS = getattr(config, "FAST_BONUS_HOURS", 24)
 FOLLOWUP_HOURS = getattr(config, "FOLLOWUP_HOURS", (0.25, 6.0, 24.0))
 FOLLOWUP_RESET_HOURS = getattr(config, "FOLLOWUP_RESET_HOURS", 48.0)
 
+ETH_TZ = timezone(timedelta(hours=3))
+
 BOT_USERNAME = ""
 LAST_BACKUP_TS = 0.0
 LAST_GROUP_POST_TS = 0.0
@@ -69,10 +86,9 @@ GROUP_POST_IDX = 0
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 log = logging.getLogger("bookbot")
-for _noisy in ("httpx", "httpcore"):
+for _noisy in ("httpx", "httpcore", "aiohttp.access"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
-# texts.py ባይዘመንም እንኳ ImportError እንዳይመጣ እዚሁ ውስጥ የተዘጋጁ የግሩፕ ማነቃቂያ ጽሑፎች
 GROUP_MOTIVATION_POSTS = getattr(_texts_mod, "GROUP_MOTIVATION_POSTS", None) or [
     "🔥 **የዕለቱ የቁመት እድገት ማስታወሻ!**\n\nዛሬ የመወጠር (Stretching) ልምምድዎን ሰርተዋል? አከርካሪዎ በየቀኑ በትክክለኛ ልምምድ ሲሳብ ለውጡ በሳምንታት ውስጥ መታየት ይጀምራል!\n\n👇 የዛሬውን ልምምድ ከጨረሱ ወይም ቁመትዎን ለመመዝገብ ከታች ያለውን አዝራር ይጫኑ፦",
     "😴 **የእንቅልፍ እና የዕድገት ሆርሞን (HGH) ምስጢር!**\n\nሰውነታችን ከ 75% በላይ የሚሆነውን የዕድገት ሆርሞን የሚያመርተው ማታ በጥልቅ እንቅልፍ ወቅት ነው። ከመተኛትዎ በፊት ለ 5 ደቂቃ የአከርካሪ ማሳሳቢያ ልምምድ ሰርተው በጊዜ ይተኙ!\n\n👇 የዛሬውን ተከታታይ ልምምድዎን (Streak) አሁኑኑ ያስመዝግቡ፦",
@@ -84,28 +100,13 @@ FALLBACK_TEXTS = {
     "analysis_young": "አስደናቂ ዜና! በዚህ የእድሜ ክልል የእድገት ፕሌቶችዎ እና የዕድገት ሆርሞን (HGH) ከፍተኛ ንቁ ደረጃ ላይ ይገኛሉ።\n📈 ከ 8 እስከ 12 CM የቁመት መጨመር ከፍተኛ እድል አለዎት!",
     "analysis_adult": "መልካም ዜና! በዚህ የእድሜ ክልል የአከርካሪ መለጠጥ (Spinal Decompression) እና የአቋም ማስተካከያ ልምምዶችን በመጠቀም\n📈 ከ 5 እስከ 8 CM ተጨማሪ ቁመት ማግኘት ይችላሉ!",
     "btn_upgrade": "⬆️ ወደ ቪዲዮ ግሩፕ አሳድግ ({price} ብር ብቻ)",
-    "btn_buy_gift": "🎁 ለጓደኛ በስጦታ ግዛ",
-    "btn_redeem_gift": "🔑 የስጦታ ኮድ አለኝ",
-    "gift_menu_text": "🎁 **ለጓደኛ ወይም ለቤተሰብ ስጦታ ይግዙ!**\n\nክፍያው እንደተረጋገጠ ልዩ የስጦታ ኮድ (`GIFT-XXXX`) ይሰጥዎታል። ኮዱን ለጓደኛዎ ሲልኩለት ወዲያውኑ ወደ ልዩ ግሩፑ መግባት ይችላል! 👇",
-    "btn_gift_books": "🎁 ስጦታ፦ መጽሐፍ ብቻ ({price} ብር)",
-    "btn_gift_bundle": "🎁👑 ስጦታ፦ መጽሐፍ + ቪዲዮ ({price} ብር)",
-    "gift_code_created": "🎉 **የስጦታ ግዢዎ ተረጋግጧል!**\n\n🔑 የስጦታ ኮድ፦ `{code}`\n📦 ጥቅል፦ {pkg_name}\n\nይህን ኮድ ለጓደኛዎ ይላኩለት፤ ቦቱ ውስጥ **«🔑 የስጦታ ኮድ አለኝ»** የሚለውን ሲነካ ወዲያውኑ የግሩፑ ሊንክ ይከፈትለታል!",
-    "ask_gift_code": "🔑 እባክዎ የተሰጠዎትን የስጦታ ኮድ (ለምሳሌ፦ `GIFT-1234`) ይጻፉ 👇",
-    "gift_redeemed_ok": "🎉 እንኳን ደስ አለዎት! የስጦታ ኮዱ ትክክል ነው፤ የግሩፑ መግቢያ ሊንክ ከታች ተልኮልዎታል! 👇",
-    "gift_invalid": "❌ ይህ የስጦታ ኮድ ትክክል አይደለም ወይም ቀድሞ ጥቅም ላይ ውሏል።",
     "social_proof_line": "\n\n🔥 ዛሬ ብቻ {today_count} ወጣቶች ወደ ግሩፑ ተቀላቅለዋል! (የመጨረሻው ከ {mins_ago} ደቂቃ በፊት)",
     "fast_bonus_line": "\n⏳ በ {rem_hr} ውስጥ ከከፈሉ የ VIP ግሩፕ ልዩ ድጋፍ ያገኛሉ!",
     "fast_bonus_expired": "",
-    "btn_promo": "🎟️ የቅናሽ ኮድ አለኝ (Promo Code)",
-    "ask_promo": "🎟️ እባክዎ ያለዎትን የቅናሽ ኮድ ይጻፉ 👇",
-    "promo_ok": "🎉 የ {disc} ብር ቅናሽ ተደርጎልዎታል! አዲሱ ዋጋ፦ {new_price} ብር።",
-    "promo_invalid": "❌ ይህ የቅናሽ ኮድ ትክክል አይደለም።",
     "faq_time_btn": "❓ በስንት ደቂቃ ወደ ግሩፑ እገባለሁ?",
     "faq_time_ans": "⏱ የደረሰኝ ፎቶ እንደላኩ ከ 1 እስከ 3 ደቂቃ ውስጥ ተረጋግጦ ወዲያውኑ ወደ Private ግሩፑ የሚያስገባዎት ሊንክ እዚሁ ይደርስዎታል!",
     "faq_other_btn": "❓ በሌላ ሰው ስልክ/ባንክ መክፈል ይቻላል?",
     "faq_other_ans": "✅ አዎ ይቻላል! በማንኛውም ሰው ስልክ ወይም ባንክ ከፍለው የደረሰኙን ፎቶ እዚህ መላክ ይችላሉ።",
-    "ussd_telebirr_btn": "📲 የቴሌብር USSD (*127#) ቅዳ",
-    "ussd_cbe_btn": "🏦 የ CBE USSD (*889#) ቅዳ",
     "voice_caption": "🎧 እንዴት በቀላሉ እንደሚከፍሉና ወደ ግሩፑ ወዲያውኑ እንደሚገቡ ይህን ድምጽ ያዳምጡ።",
     "bad_photo_quality": "⚠️ የላኩት ፎቶ በጣም የጨለመ ወይም ጥራቱ አነስተኛ ስለሆነ አይነበብም። እባክዎ ግልጽ Screenshot ይላኩ። 👇",
     "status_checking": "🔵 ሁኔታ፦ አድሚኑ ደረሰኝዎን እያረጋገጠ ነው...\n⏳ እባክዎ ጥቂት ይጠብቁን። 🙏",
@@ -149,8 +150,6 @@ FALLBACK_TEXTS = {
 
 def check_texts():
     config.PRICES.setdefault("upgrade", max(100, config.PRICES.get("bundle", 597) - config.PRICES.get("books", 397)))
-    config.PRICES.setdefault("gift_books", config.PRICES.get("books", 397))
-    config.PRICES.setdefault("gift_bundle", config.PRICES.get("bundle", 597))
     if "upgrade" not in getattr(config, "CHANNELS", {}):
         config.CHANNELS["upgrade"] = config.CHANNELS.get("bundle", 0)
     for lang, table in T.items():
@@ -218,19 +217,6 @@ def init_db():
                 amount REAL,
                 raw_text TEXT,
                 used_order_id INTEGER DEFAULT NULL,
-                created REAL
-            );
-            CREATE TABLE IF NOT EXISTS promos (
-                code TEXT PRIMARY KEY,
-                discount INTEGER,
-                max_uses INTEGER,
-                used_count INTEGER DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS gifts (
-                code TEXT PRIMARY KEY,
-                package TEXT,
-                buyer_id INTEGER,
-                redeemed_by INTEGER DEFAULT NULL,
                 created REAL
             );
             """
@@ -339,7 +325,7 @@ def st_get(user_id):
 
 
 def st_set(user_id, **kv):
-    allowed = {"pkg", "step", "photo", "pay_started", "reminded", "promo_code", "discount"}
+    allowed = {"pkg", "step", "photo", "pay_started", "reminded"}
     if not set(kv) <= allowed:
         raise ValueError(f"unknown session field: {set(kv) - allowed}")
     execute("INSERT OR IGNORE INTO sessions(user_id) VALUES(?)", (user_id,))
@@ -553,8 +539,6 @@ PKG_LABEL = {
     "books": "📕 መጽሐፍ ብቻ (Private Group)",
     "bundle": "👑 መጽሐፍ + ቪዲዮ (VIP Group)",
     "upgrade": "⬆️ ወደ VIP ግሩፕ ማሳደጊያ",
-    "gift_books": "🎁 ስጦታ፦ መጽሐፍ ብቻ ግሩፕ",
-    "gift_bundle": "🎁👑 ስጦታ፦ መጽሐፍ + ቪዲዮ ግሩፕ",
 }
 
 
@@ -648,28 +632,11 @@ def b_pkg(context, user, lang):
         [
             [InlineKeyboardButton(T[lang]["btn_books"].format(price=p["books"]), callback_data="pkg:books")],
             [InlineKeyboardButton(T[lang]["btn_bundle"].format(price=p["bundle"]), callback_data="pkg:bundle")],
-            [
-                InlineKeyboardButton(T[lang]["btn_buy_gift"], callback_data="go:gift"),
-                InlineKeyboardButton(T[lang]["btn_redeem_gift"], callback_data="gift:redeem"),
-            ],
             [InlineKeyboardButton(T[lang]["btn_refer"].format(count=cnt, target=target), callback_data="go:refer")],
             [back_button(lang, "proof")],
         ]
     )
     return text, kb
-
-
-def b_gift(context, user, lang):
-    p = config.PRICES
-    back_target = "vip" if user_best_package(user.id) else "pkg"
-    kb = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton(T[lang]["btn_gift_books"].format(price=p["gift_books"]), callback_data="pkg:gift_books")],
-            [InlineKeyboardButton(T[lang]["btn_gift_bundle"].format(price=p["gift_bundle"]), callback_data="pkg:gift_bundle")],
-            [back_button(lang, back_target)],
-        ]
-    )
-    return T[lang]["gift_menu_text"], kb
 
 
 def format_height_progress(user_id, lang):
@@ -697,7 +664,6 @@ def b_vip(context, user, lang):
     ]
     if best == "books":
         rows.append([InlineKeyboardButton(T[lang]["btn_upgrade"].format(price=config.PRICES.get("upgrade", 200)), callback_data="pkg:upgrade")])
-    rows.append([InlineKeyboardButton(T[lang]["btn_buy_gift"], callback_data="go:gift")])
     rows.append([InlineKeyboardButton(T[lang]["btn_refer"].format(count=cnt, target=target), callback_data="go:refer")])
     rows.append([InlineKeyboardButton(T[lang]["btn_vip_restart"], callback_data="go:lang")])
     return text, InlineKeyboardMarkup(rows)
@@ -719,7 +685,7 @@ def b_refer(context, user, lang):
     return text, kb
 
 
-def account_copy_rows(lang="am", has_promo=False):
+def account_copy_rows(lang="am"):
     rows = []
     for line in config.PAYMENT_ACCOUNTS.splitlines():
         nums = re.findall(r"\d{6,}", line)
@@ -727,15 +693,6 @@ def account_copy_rows(lang="am", has_promo=False):
             label = re.sub(r"\s*\(.*?\)", "", line).strip()[:55]
             rows.append([InlineKeyboardButton(f"📋 {label}", copy_text=CopyTextButton(text=nums[0]))])
     rows = rows[:6]
-    ussd_row = []
-    if getattr(config, "TELEBIRR_PHONE", ""):
-        ussd_row.append(InlineKeyboardButton(T[lang]["ussd_telebirr_btn"], copy_text=CopyTextButton(text="*127#")))
-    if getattr(config, "CBE_ACCOUNT", ""):
-        ussd_row.append(InlineKeyboardButton(T[lang]["ussd_cbe_btn"], copy_text=CopyTextButton(text="*889#")))
-    if ussd_row:
-        rows.append(ussd_row)
-    if not has_promo:
-        rows.append([InlineKeyboardButton(T[lang]["btn_promo"], callback_data="promo:ask")])
     rows.append([InlineKeyboardButton(T[lang]["faq_time_btn"], callback_data="faq:time")])
     rows.append([InlineKeyboardButton(T[lang]["faq_other_btn"], callback_data="faq:other")])
     return rows
@@ -746,24 +703,22 @@ def b_pay(context, user, lang):
     pkg = s.get("pkg")
     if pkg not in config.PRICES:
         return b_pkg(context, user, lang)
-    disc = int(s.get("discount") or 0)
-    final_price = max(10, config.PRICES[pkg] - disc)
-    disc_note = f"(🎟️ -{disc} ብር ቅናሽ!)" if disc > 0 else ""
+    final_price = config.PRICES[pkg]
     raw_pay = T[lang]["pay"]
     extra_footer = get_social_and_bonus_footer(user.id, lang)
     if "{discount_note}" in raw_pay:
-        text = raw_pay.format(price=final_price, discount_note=disc_note, accounts=config.PAYMENT_ACCOUNTS, extra_footer=extra_footer)
+        text = raw_pay.format(price=final_price, discount_note="", accounts=config.PAYMENT_ACCOUNTS, extra_footer=extra_footer)
     else:
-        text = raw_pay.format(price=f"{final_price} {disc_note}".strip(), accounts=config.PAYMENT_ACCOUNTS) + extra_footer
+        text = raw_pay.format(price=final_price, accounts=config.PAYMENT_ACCOUNTS) + extra_footer
     st_set(user.id, step="await_photo", pay_started=s.get("pay_started") or time.time())
-    back_target = "gift" if pkg.startswith("gift_") else ("vip" if pkg == "upgrade" else "pkg")
-    return text, InlineKeyboardMarkup(account_copy_rows(lang, has_promo=bool(disc)) + [[back_button(lang, back_target)]])
+    back_target = "vip" if pkg == "upgrade" else "pkg"
+    return text, InlineKeyboardMarkup(account_copy_rows(lang) + [[back_button(lang, back_target)]])
 
 
 BUILD = {
     "lang": b_lang, "welcome": b_welcome, "q1": b_q1, "q2": b_q2, "q3": b_q3,
     "offer": b_offer, "video": b_video, "proof": b_proof, "pkg": b_pkg, "pay": b_pay,
-    "vip": b_vip, "refer": b_refer, "gift": b_gift,
+    "vip": b_vip, "refer": b_refer,
 }
 
 
@@ -878,8 +833,9 @@ async def show(name, context, chat_id, user, current=None, can_edit=False):
 
 # ---------------------------------------------------------------- Streak helper
 async def process_user_streak(bot, user, lang):
-    today_str = time.strftime("%Y-%m-%d")
-    yest_str = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400))
+    now_eth = datetime.now(ETH_TZ)
+    today_str = now_eth.strftime("%Y-%m-%d")
+    yest_str = (now_eth - timedelta(days=1)).strftime("%Y-%m-%d")
     r = fetch("SELECT COALESCE(streak_count,0) AS sc, streak_last_date FROM users WHERE user_id=?", (user.id,))[0]
     if r["streak_last_date"] == today_str:
         return False, r["sc"], T[lang]["streak_already"].format(streak=r["sc"])
@@ -968,14 +924,6 @@ async def on_vip_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show("vip", context, q.message.chat_id, u, current=q.message.message_id, can_edit=_can_edit(q))
 
 
-async def on_gift_redeem_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    ack(q)
-    uid = q.from_user.id
-    st_set(uid, step="await_gift")
-    await context.bot.send_message(uid, T[get_lang(uid)]["ask_gift_code"])
-
-
 async def on_go(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     ack(q)
@@ -1010,16 +958,9 @@ async def on_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     ack(q)
     pkg = q.data.split(":")[1]
-    if pkg in config.PRICES:
-        st_set(q.from_user.id, pkg=pkg, promo_code=None, discount=0)
+    if pkg in ("books", "bundle", "upgrade") and pkg in config.PRICES:
+        st_set(q.from_user.id, pkg=pkg)
         await show("pay", context, q.message.chat_id, q.from_user, current=q.message.message_id, can_edit=_can_edit(q))
-
-
-async def on_promo_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    ack(q)
-    st_set(q.from_user.id, step="await_promo")
-    await context.bot.send_message(q.from_user.id, T[get_lang(q.from_user.id)]["ask_promo"])
 
 
 async def on_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1089,7 +1030,7 @@ async def is_duplicate_receipt(uniq, digest, small=None):
 
 
 def ready_to_pay(s):
-    return s.get("step") in ("await_photo", "await_promo") and s.get("pkg") in config.PRICES
+    return s.get("step") == "await_photo" and s.get("pkg") in config.PRICES
 
 
 async def update_live_user_status(bot, order, text_key):
@@ -1128,18 +1069,16 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if fetch("SELECT COUNT(*) AS n FROM orders WHERE user_id=? AND status='pending'", (uid,))[0]["n"] >= MAX_PENDING_PER_USER:
         await update.message.reply_text(T[lang]["help_busy"])
         return
-    pkg, disc, promo = s["pkg"], int(s.get("discount") or 0), s.get("promo_code")
-    final_price = max(10, config.PRICES[pkg] - disc)
+    pkg = s["pkg"]
+    final_price = config.PRICES[pkg]
     try:
         order_id = execute(
-            "INSERT INTO orders(user_id, package, price, promo_code, photo_file_id, photo_uid, photo_hash, photo_thumb) VALUES(?,?,?,?,?,?,?,?)",
-            (uid, pkg, final_price, promo, fid, uniq, digest, small),
+            "INSERT INTO orders(user_id, package, price, photo_file_id, photo_uid, photo_hash, photo_thumb) VALUES(?,?,?,?,?,?,?)",
+            (uid, pkg, final_price, fid, uniq, digest, small),
         )
     except sqlite3.IntegrityError:
         await update.message.reply_text(T[lang]["dup_receipt"])
         return
-    if promo:
-        execute("UPDATE promos SET used_count = COALESCE(used_count, 0) + 1 WHERE code=?", (promo,))
     st_clear(uid)
     ensure_user(user)
     status_msg = await update.message.reply_text(T[lang]["received"])
@@ -1162,20 +1101,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     s = st_get(uid)
     lang = get_lang(uid)
-
-    if s.get("step") == "await_gift":
-        code = txt.upper().strip()
-        rows = fetch("SELECT * FROM gifts WHERE code=? AND redeemed_by IS NULL", (code,))
-        if not rows or not execute_rc("UPDATE gifts SET redeemed_by=? WHERE code=? AND redeemed_by IS NULL", (uid, code)):
-            st_clear(uid)
-            await update.message.reply_text(T[lang]["gift_invalid"])
-            return
-        st_clear(uid)
-        order_id = execute("INSERT INTO orders(user_id, package, price, ref, status) VALUES(?,?,0,?,'approved')", (uid, rows[0]["package"], code))
-        order = dict(fetch("SELECT * FROM orders WHERE id=?", (order_id,))[0])
-        await update.message.reply_text(T[lang]["gift_redeemed_ok"])
-        await deliver_approved_order(context.bot, order)
-        return
 
     if s.get("step") == "await_height":
         nums = re.findall(r"\d+(?:\.\d+)?", txt)
@@ -1207,20 +1132,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show("vip", context, update.effective_chat.id, user)
         return
 
-    if s.get("step") == "await_promo" and s.get("pkg") in config.PRICES:
-        code = txt.upper()
-        rows = fetch("SELECT * FROM promos WHERE code=? AND used_count < max_uses", (code,))
-        if not rows:
-            st_set(uid, step="await_photo")
-            await update.message.reply_text(T[lang]["promo_invalid"])
-            return
-        disc = int(rows[0]["discount"])
-        new_price = max(10, config.PRICES[s["pkg"]] - disc)
-        st_set(uid, promo_code=code, discount=disc, step="await_photo")
-        await update.message.reply_text(T[lang]["promo_ok"].format(disc=disc, new_price=new_price))
-        await show("pay", context, update.effective_chat.id, user)
-        return
-
     if s.get("step") == "await_testi":
         st_clear(uid)
         uname = f" @{user.username}" if user.username else ""
@@ -1232,12 +1143,84 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(T[lang]["need_photo" if ready_to_pay(s) else "hint"])
 
 
-# ---------------------------------------------------------------- Admin Commands
+# ---------------------------------------------------------------- Telegram Admin Commands
+def build_admin_dashboard():
+    total_u = fetch("SELECT COUNT(*) AS n FROM users")[0]["n"]
+    today_u = fetch("SELECT COUNT(*) AS n FROM users WHERE date(created)=date('now')")[0]["n"]
+    pending_o = fetch("SELECT COUNT(*) AS n FROM orders WHERE status='pending'")[0]["n"]
+    approved_o = fetch("SELECT COUNT(*) AS n, COALESCE(SUM(price),0) AS rev FROM orders WHERE status='approved'")[0]
+    today_o = fetch("SELECT COUNT(*) AS n, COALESCE(SUM(price),0) AS rev FROM orders WHERE status='approved' AND date(created)=date('now')")[0]
+
+    url_note = f"\n🌐 **ዌብ ዳሽቦርድ፦** {PUBLIC_URL}\n" if PUBLIC_URL else "\n💡 *Railway Settings ➔ Networking ➔ Generate Domain በመጫን ዌብ ዳሽቦርዱን በብራውዘር ይክፈቱ!*\n"
+
+    text = (
+        f"🎛 **የአድሚን ዳሽቦርድ — {config.BOT_NAME}**\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+        f"{url_note}\n"
+        f"👥 **ጠቅላላ ተጠቃሚዎች፦** {total_u} (ዛሬ፦ +{today_u})\n"
+        f"💰 **ጠቅላላ ሽያጭ፦** {approved_o['n']} ጥቅል ({approved_o['rev']} ብር)\n"
+        f"🔥 **የዛሬ ሽያጭ፦** {today_o['n']} ጥቅል ({today_o['rev']} ብር)\n"
+        f"⏳ **በመጠባበቅ ላይ፦** {pending_o} ደረሰኝ"
+    )
+    rows = []
+    if PUBLIC_URL:
+        rows.append([InlineKeyboardButton("🌐 ዘመናዊ Web Dashboard በብራውዘር ክፈት", url=PUBLIC_URL)])
+    rows.extend(
+        [
+            [
+                InlineKeyboardButton(f"⏳ ያልተረጋገጡ ደረሰኞች ({pending_o})", callback_data="adm:pending"),
+                InlineKeyboardButton("👥 ተጠቃሚዎች", callback_data="uopen:0"),
+            ],
+            [
+                InlineKeyboardButton("🔥 ግሩፕ ፖስት ልቀቅ", callback_data="adm:postgroup"),
+                InlineKeyboardButton("💾 ዳታቤዝ ባክአፕ", callback_data="adm:backup"),
+            ],
+            [InlineKeyboardButton("🔄 አድስ (Refresh)", callback_data="adm:refresh")],
+        ]
+    )
+    return text, InlineKeyboardMarkup(rows)
+
+
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    text, kb = build_admin_dashboard()
+    await update.message.reply_text(text, reply_markup=kb)
+
+
+async def on_admin_dash(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.from_user.id != ADMIN_ID:
+        return
+    action = q.data.split(":")[1]
+    if action == "refresh":
+        text, kb = build_admin_dashboard()
+        try:
+            await q.edit_message_text(text, reply_markup=kb)
+        except Exception:
+            pass
+        await q.answer("✅ ታድሷል!")
+    elif action == "pending":
+        await q.answer()
+        rows = fetch("SELECT id FROM orders WHERE status='pending' ORDER BY id")
+        if not rows:
+            await context.bot.send_message(ADMIN_ID, "✅ በመጠባበቅ ላይ ያለ ደረሰኝ የለም።")
+            return
+        for r in rows[:10]:
+            await send_order_to_admin(context.bot, r["id"])
+    elif action == "postgroup":
+        sent = await post_motivation_to_groups(context.bot)
+        await q.answer(f"✅ ወደ {sent} ግሩፕ(ዎች) ተለቋል!" if sent else "⚠️ ምንም ግሩፕ አልተገኘም።", show_alert=True)
+    elif action == "backup":
+        await q.answer("💾 ባክአፕ በመላክ ላይ...")
+        await send_db_backup(context.bot)
+
+
 async def cmd_postgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     sent = await post_motivation_to_groups(context.bot)
-    await update.message.reply_text(f"✅ የማነቃቂያ ጽሑፍ እና የ1-ንኪ አዝራሮች ወደ {sent} ግሩፕ(ዎች) ተለቋል!" if sent else "⚠️ ምንም ግሩፕ አልተገኘም (BOOKS_CHANNEL_ID / BUNDLE_CHANNEL_ID ያረጋግጡ)።")
+    await update.message.reply_text(f"✅ ወደ {sent} ግሩፕ(ዎች) ተለቋል!" if sent else "⚠️ ምንም ግሩፕ አልተገኘም።")
 
 
 async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1276,29 +1259,6 @@ async def on_admin_grant(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order = dict(fetch("SELECT * FROM orders WHERE id=?", (order_id,))[0])
     ok, info = await deliver_approved_order(context.bot, order)
     await q.answer("✅ የግሩፕ መግቢያ ሊንኩ ለደንበኛው ተልኳል!" if ok else f"⚠️ {info}"[:190], show_alert=True)
-
-
-async def cmd_addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if len(context.args) < 2 or not context.args[1].isdigit():
-        await update.message.reply_text("አጠቃቀም፦ `/addpromo <ኮድ> <ቅናሽ_ብር> [ብዛት]`")
-        return
-    code, disc = context.args[0].upper(), int(context.args[1])
-    max_u = int(context.args[2]) if len(context.args) >= 3 and context.args[2].isdigit() else 100
-    execute("INSERT OR REPLACE INTO promos(code, discount, max_uses, used_count) VALUES(?,?,?,0)", (code, disc, max_u))
-    await update.message.reply_text(f"✅ የቅናሽ ኮድ ተፈጥሯል፦ `{code}` (-{disc} ብር፣ ለ {max_u} ሰው)")
-
-
-async def cmd_delpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if not context.args:
-        rows = fetch("SELECT * FROM promos")
-        await update.message.reply_text("\n".join(["🎟️ ኮዶች፦"] + [f"• {r['code']} (-{r['discount']} ብር) — {r['used_count']}/{r['max_uses']}" for r in rows]) if rows else "ምንም የቅናሽ ኮድ የለም።")
-        return
-    execute("DELETE FROM promos WHERE code=?", (context.args[0].upper(),))
-    await update.message.reply_text("🗑️ ተሰርዟል።")
 
 
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1411,7 +1371,7 @@ async def try_match_pending_with_sms(bot, specific_order_id=None, ocr_text=""):
 
 
 async def credit_referrer_on_purchase(bot, buyer_id, package):
-    if package not in ("books", "bundle", "gift_books", "gift_bundle"):
+    if package not in ("books", "bundle"):
         return
     rows = fetch("SELECT referred_by, COALESCE(ref_credited, 0) AS credited FROM users WHERE user_id=?", (buyer_id,))
     if not rows or not rows[0]["referred_by"] or rows[0]["credited"]:
@@ -1452,11 +1412,10 @@ def fit_caption(text, suffix=""):
 
 def order_caption(order, user, footer=True):
     uname = f" @{user['username']}" if user["username"] else ""
-    promo_tag = f" (🎟️ {order['promo_code']})" if order.get("promo_code") else ""
     text = (
         f"🧾 ትዕዛዝ #{order['id']}\n"
         f"ደንበኛ፦ {user['name']} (id {order['user_id']}){uname}\n"
-        f"ጥቅል፦ {PKG_LABEL.get(order['package'], order['package'])} | ዋጋ፦ {order['price']} ብር{promo_tag}\n"
+        f"ጥቅል፦ {PKG_LABEL.get(order['package'], order['package'])} | ዋጋ፦ {order['price']} ብር\n"
         f"ቁመት/እድሜ/ፆታ፦ {user['height']}/{user['age']}/{user['gender']}"
     )
     if order["note"]:
@@ -1531,26 +1490,31 @@ async def run_ocr(bot, order_id):
             pass
 
 
+async def do_quick_reply(bot, oid: int, kind: str):
+    rows = fetch("SELECT * FROM orders WHERE id=?", (oid,))
+    if not rows:
+        return False, "ትዕዛዙ አልተገኘም"
+    order = dict(rows[0])
+    uid = order["user_id"]
+    msg_key = {"wait": "qreply_wait", "blur": "qreply_blur", "less": "qreply_less"}.get(kind)
+    if kind == "wait":
+        await update_live_user_status(bot, order, "status_checking")
+    elif kind in ("blur", "less"):
+        st_set(uid, pkg=order["package"], step="await_photo", pay_started=time.time(), reminded=0)
+    try:
+        await bot.send_message(uid, T[get_lang(uid)][msg_key])
+        return True, "መልዕክቱ ለደንበኛው ተልኳል!"
+    except Exception as e:
+        return False, str(e)
+
+
 async def on_admin_quick_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if q.from_user.id != ADMIN_ID:
         return
     _, kind, oid = q.data.split(":")
-    rows = fetch("SELECT * FROM orders WHERE id=?", (int(oid),))
-    if not rows:
-        return
-    order = dict(rows[0])
-    uid = order["user_id"]
-    msg_key = {"wait": "qreply_wait", "blur": "qreply_blur", "less": "qreply_less"}.get(kind)
-    if kind == "wait":
-        await update_live_user_status(context.bot, order, "status_checking")
-    elif kind in ("blur", "less"):
-        st_set(uid, pkg=order["package"], step="await_photo", pay_started=time.time(), reminded=0)
-    try:
-        await context.bot.send_message(uid, T[get_lang(uid)][msg_key])
-        await q.answer("✅ መልዕክቱ ተልኳል!")
-    except Exception as e:
-        await q.answer(f"❌ {e}"[:190], show_alert=True)
+    ok, msg = await do_quick_reply(context.bot, int(oid), kind)
+    await q.answer(f"✅ {msg}" if ok else f"❌ {msg}"[:190], show_alert=not ok)
 
 
 async def on_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1599,25 +1563,8 @@ async def send_invite(bot, order):
 async def deliver_approved_order(bot, order, auto_sms=None):
     uid = order["user_id"]
     pkg = order["package"]
-    lang = get_lang(uid)
     await update_live_user_status(bot, order, "status_approved")
     await credit_referrer_on_purchase(bot, uid, pkg)
-
-    if pkg in ("gift_books", "gift_bundle"):
-        real_pkg = "books" if pkg == "gift_books" else "bundle"
-        code = f"GIFT-{random.randint(1000, 9999)}-{order['id']}"
-        execute("INSERT OR REPLACE INTO gifts(code, package, buyer_id, created) VALUES(?,?,?,?)", (code, real_pkg, uid, time.time()))
-        try:
-            await bot.send_message(uid, T[lang]["gift_code_created"].format(code=code, pkg_name=PKG_LABEL[real_pkg]))
-        except Exception:
-            pass
-        full, user = load_order(order["id"])
-        if full and full.get("admin_msg"):
-            try:
-                await bot.edit_message_caption(chat_id=ADMIN_ID, message_id=full["admin_msg"], caption=fit_caption(order_caption(full, user, footer=False), f"\n\n✅ የስጦታ ኮድ ({code}) ተልኳል"))
-            except Exception:
-                pass
-        return True, code
 
     execute("UPDATE users SET bought_at=COALESCE(bought_at, ?), coach_stage=COALESCE(coach_stage, 0), max_funnel=6 WHERE user_id=?", (time.time(), uid))
     label = PKG_LABEL.get(pkg, pkg)
@@ -1632,6 +1579,43 @@ async def deliver_approved_order(bot, order, auto_sms=None):
         except Exception:
             pass
     return ok, info
+
+
+async def decide_order(bot, oid: int, action: str):
+    rows = fetch("SELECT * FROM orders WHERE id=?", (oid,))
+    if not rows or rows[0]["status"] != "pending":
+        return False, "ይህ ትዕዛዝ ቀድሞ ተወስኗል"
+    order = dict(rows[0])
+    if action == "approve":
+        if not execute_rc("UPDATE orders SET status='approved' WHERE id=? AND status='pending'", (oid,)):
+            return False, "ቀድሞ ተወስኗል"
+        ok, info = await deliver_approved_order(bot, order)
+        return ok, ("ተረጋግጧል! የግሩፕ ሊንክ ለደንበኛው ተልኳል ✅" if ok else f"ተረጋግጧል ግን ሊንክ አልተላከም፦ {info}")
+    else:
+        if not execute_rc("UPDATE orders SET status='rejected' WHERE id=? AND status='pending'", (oid,)):
+            return False, "ቀድሞ ተወስኗል"
+        await update_live_user_status(bot, order, "status_rejected")
+        execute("UPDATE users SET started_at=?, followup_stage=0 WHERE user_id=?", (time.time(), order["user_id"]))
+        try:
+            await bot.send_message(order["user_id"], T[get_lang(order["user_id"])]["rejected"])
+        except Exception:
+            pass
+        full, user = load_order(oid)
+        if full and full.get("admin_msg"):
+            try:
+                await bot.edit_message_caption(chat_id=ADMIN_ID, message_id=full["admin_msg"], caption=fit_caption(order_caption(full, user, footer=False), "\n\n❌ ውድቅ ተደርጓል"))
+            except Exception:
+                pass
+        return True, "ትዕዛዙ ውድቅ ተደርጓል ❌"
+
+
+async def on_admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.from_user.id != ADMIN_ID:
+        return
+    action, oid = q.data.split(":")
+    ok, msg = await decide_order(context.bot, int(oid), action)
+    await q.answer(msg[:190], show_alert=not ok)
 
 
 async def on_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1687,72 +1671,7 @@ async def channel_warnings(bot):
     return warns
 
 
-async def on_admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if q.from_user.id != ADMIN_ID:
-        return
-    action, oid = q.data.split(":")
-    rows = fetch("SELECT * FROM orders WHERE id=?", (int(oid),))
-    if not rows or rows[0]["status"] != "pending":
-        await q.answer("ቀድሞ ተወስኗል", show_alert=True)
-        return
-    order = dict(rows[0])
-
-    if action == "approve":
-        if not execute_rc("UPDATE orders SET status='approved' WHERE id=? AND status='pending'", (order["id"],)):
-            return
-        ok, info = await deliver_approved_order(context.bot, order)
-        await q.answer("ተረጋግጧል ✅ የግሩፕ ሊንክ ተልኳል" if ok else f"ሊንክ አልተላከም፦ {info}"[:190], show_alert=not ok)
-    else:
-        if not execute_rc("UPDATE orders SET status='rejected' WHERE id=? AND status='pending'", (order["id"],)):
-            return
-        await update_live_user_status(context.bot, order, "status_rejected")
-        execute("UPDATE users SET started_at=?, followup_stage=0 WHERE user_id=?", (time.time(), order["user_id"]))
-        try:
-            await context.bot.send_message(order["user_id"], T[get_lang(order["user_id"])]["rejected"])
-        except Exception:
-            pass
-        await q.answer("ውድቅ ተደርጓል")
-        full, user = load_order(order["id"])
-        try:
-            await q.edit_message_caption(fit_caption(order_caption(full, user, footer=False), "\n\n❌ ውድቅ ተደርጓል"))
-        except Exception:
-            pass
-
-
-# ---------------------------------------------------------------- Stats & Users
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    users = fetch("SELECT COUNT(*) AS n FROM users")[0]["n"]
-    pending = fetch("SELECT COUNT(*) AS n FROM orders WHERE status='pending'")[0]["n"]
-    ok = fetch("SELECT COUNT(*) AS n, COALESCE(SUM(price),0) AS s FROM orders WHERE status='approved'")[0]
-    refs = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(ref_credited, 0)=1")[0]["n"]
-    f_q = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 1")[0]["n"]
-    f_res = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 2")[0]["n"]
-    f_vid = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 3")[0]["n"]
-    f_pkg = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 4")[0]["n"]
-    f_pay = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 5")[0]["n"]
-
-    src_rows = fetch(
-        """
-        SELECT COALESCE(u.ad_source, 'ቀጥታ (Direct)') AS src, COUNT(DISTINCT u.user_id) AS u_cnt,
-               COUNT(o.id) AS o_cnt, COALESCE(SUM(o.price), 0) AS rev
-        FROM users u LEFT JOIN orders o ON o.user_id = u.user_id AND o.status = 'approved'
-        GROUP BY COALESCE(u.ad_source, 'ቀጥታ (Direct)') ORDER BY rev DESC, u_cnt DESC LIMIT 6
-        """
-    )
-    src_lines = [f"• {r['src']}: {r['u_cnt']} ሰው ({r['o_cnt']} ሽያጭ — {r['rev']} ብር)" for r in src_rows]
-    text = (
-        f"📊 **አጠቃላይ ስታቲስቲክስ**\n👥 ተጠቃሚዎች፦ {users} | ⏳ በመጠባበቅ ላይ፦ {pending}\n"
-        f"✅ የተሸጠ፦ {ok['n']} ({ok['s']} ብር) | 🎁 በሪፈራል፦ {refs}\n\n"
-        f"📈 **የደንበኞች ጉዞ (Funnel)**\n🏁 ጥያቄ፦ {f_q} ➔ 🧬 ውጤት፦ {f_res} ➔ 🎥 ቪዲዮ፦ {f_vid} ➔ 📦 ጥቅል፦ {f_pkg} ➔ 💳 ክፍያ፦ {f_pay}\n\n"
-        f"📢 **የማስታወቂያ ምንጮች**\n" + "\n".join(src_lines)
-    )
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("👥 የተጠቃሚዎች ዝርዝር", callback_data="uopen:0")]])
-    await update.message.reply_text(text, reply_markup=kb)
-
-
+# ---------------------------------------------------------------- Stats & Users (Telegram)
 def get_users_page(page=0):
     limit, offset = 15, page * 15
     total_users = fetch("SELECT COUNT(*) AS n FROM users")[0]["n"]
@@ -1802,60 +1721,6 @@ async def on_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 
-def get_followup_page(page=0):
-    now, limit, offset = time.time(), 15, page * 15
-    total_in_queue = fetch("SELECT COUNT(*) AS n FROM users u WHERE u.started_at IS NOT NULL AND COALESCE(u.bot_blocked,0)=0 AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id=u.user_id AND o.status IN ('pending','approved'))")[0]["n"]
-    total_pages = max(1, (total_in_queue + limit - 1) // limit)
-    rows = fetch("SELECT u.user_id, u.name, u.started_at, COALESCE(u.followup_stage,0) AS stage FROM users u WHERE u.started_at IS NOT NULL AND COALESCE(u.bot_blocked,0)=0 AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id=u.user_id AND o.status IN ('pending','approved')) ORDER BY u.user_id DESC LIMIT ? OFFSET ?", (limit, offset))
-    lines = [f"🔍 የማስታወሻ ክትትል — ያልከፈሉ፦ {total_in_queue} (ገጽ {page+1}/{total_pages})", "━━━━━━━━━━━━━━━━━━━━"]
-    for i, r in enumerate(rows):
-        stage, elapsed_min = r["stage"], (now - r["started_at"]) / 60.0
-        status = f"ደረጃ {stage+1}/3 (ከ {max(0.0, FOLLOWUP_HOURS[stage] * 60.0 - elapsed_min):.0f} ደቂቃ በኋላ)" if stage < len(FOLLOWUP_HOURS) else "3ቱም ተልኳል"
-        lines.append(f"{offset + i + 1}. {r['name']} (ID:{r['user_id']}) — {status}")
-    kb_rows = []
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("⬅️", callback_data=f"fpage:{page-1}"))
-    if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("➡️", callback_data=f"fpage:{page+1}"))
-    if nav:
-        kb_rows.append(nav)
-    kb_rows.append([InlineKeyboardButton("🚀 1ኛውን መልዕክት ለእኔ ላክ (Test)", callback_data="fnow:1")])
-    kb_rows.append([InlineKeyboardButton("🔄 ሁሉም ያልገዙ ሰዎች አሁን እንዲደርሳቸው አድርግ", callback_data="fnow:all")])
-    return "\n".join(lines), InlineKeyboardMarkup(kb_rows)
-
-
-async def cmd_test_followup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        text, kb = get_followup_page(0)
-        await update.message.reply_text(text, reply_markup=kb)
-
-
-async def on_followup_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if q.from_user.id == ADMIN_ID:
-        text, kb = get_followup_page(int(q.data.split(":")[1]))
-        try:
-            await q.edit_message_text(text, reply_markup=kb)
-        except Exception:
-            pass
-        await q.answer()
-
-
-async def on_followup_test_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if q.from_user.id != ADMIN_ID:
-        return
-    if q.data.split(":")[1] == "1":
-        await context.bot.send_message(ADMIN_ID, T[get_lang(ADMIN_ID)]["followup_1"].format(name=q.from_user.first_name or "ጓደኛዬ"))
-        await q.answer("1ኛው መልዕክት ተልኳል!")
-    else:
-        immediate_start = time.time() - (FOLLOWUP_HOURS[0] * 3600) - 10
-        execute("UPDATE users SET started_at=?, followup_stage=0 WHERE COALESCE(bot_blocked,0)=0 AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id=users.user_id AND o.status IN ('pending','approved'))", (immediate_start,))
-        await q.answer("አሁኑኑ ለሁሉም መላክ ይጀምራል።", show_alert=True)
-        await check_followups(context.bot)
-
-
 async def cmd_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -1865,6 +1730,874 @@ async def cmd_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     for r in rows[:10]:
         await send_order_to_admin(context.bot, r["id"])
+
+
+# ================================================================
+# 🌐 MODERN WEB ADMIN DASHBOARD (AIOHTTP)
+# ================================================================
+def _dash_token():
+    return hashlib.sha256(f"{TOKEN}:{DASHBOARD_PASS}:ethio_dash".encode()).hexdigest()
+
+
+def _is_authed(request: web.Request) -> bool:
+    cookie = request.cookies.get("adm_session", "")
+    hdr = request.headers.get("X-Admin-Token", "")
+    expected = _dash_token()
+    return (cookie and hmac.compare_digest(cookie, expected)) or (hdr and hmac.compare_digest(hdr, expected))
+
+
+DASHBOARD_HTML = r"""<!DOCTYPE html>
+<html lang="am" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ethio Length — Admin Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Plus Jakarta Sans', sans-serif; background: #090d16; color: #f1f5f9; }
+  .glass { background: rgba(15, 23, 42, 0.75); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,0.08); }
+  .card-hover { transition: all 0.2s ease; }
+  .card-hover:hover { transform: translateY(-2px); border-color: rgba(56, 189, 248, 0.35); }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #090d16; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+</style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+<!-- LOGIN MODAL -->
+<div id="loginScreen" class="fixed inset-0 z-50 flex items-center justify-center bg-[#090d16] p-4 hidden">
+  <div class="glass max-w-md w-full rounded-3xl p-8 shadow-2xl text-center border border-sky-500/20">
+    <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center mx-auto mb-5 shadow-lg shadow-sky-500/25 text-3xl">👑</div>
+    <h1 class="text-2xl font-extrabold tracking-tight mb-1">Ethio Length Admin</h1>
+    <p class="text-slate-400 text-sm mb-6">ወደ ዘመናዊው የአድሚን ዳሽቦርድ ለመግባት ፓስዎርድ ያስገቡ</p>
+    <form onsubmit="doLogin(event)" class="space-y-4">
+      <input id="passInput" type="password" placeholder="Password (ወይም ADMIN_ID)" required
+        class="w-full px-4 py-3.5 rounded-xl bg-slate-900/90 border border-slate-700 text-white focus:outline-none focus:border-sky-500 text-center text-lg tracking-widest">
+      <button type="submit" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 font-bold text-white shadow-lg shadow-sky-500/25 transition">
+        ግባ (Sign In) 🚀
+      </button>
+      <p id="loginErr" class="text-rose-400 text-sm hidden"></p>
+    </form>
+  </div>
+</div>
+
+<!-- TOP NAVBAR -->
+<header class="glass sticky top-0 z-30 border-b border-slate-800/80">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center font-bold text-xl shadow-md shadow-sky-500/20">📏</div>
+      <div>
+        <div class="flex items-center gap-2">
+          <span id="botName" class="font-extrabold text-lg tracking-tight text-white">Ethio Length</span>
+          <span class="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">● LIVE</span>
+        </div>
+        <p id="botUser" class="text-xs text-slate-400">@bot</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2 sm:gap-3">
+      <button onclick="loadAll(true)" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs sm:text-sm font-medium flex items-center gap-1.5 transition">
+        <span>🔄</span> <span class="hidden sm:inline">አድስ</span>
+      </button>
+      <a href="/api/backup" class="px-3.5 py-2 rounded-xl bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 text-xs sm:text-sm font-medium flex items-center gap-1.5 transition">
+        <span>💾</span> <span class="hidden sm:inline">Backup (.db)</span>
+      </a>
+      <button onclick="doLogout()" class="px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-xs sm:text-sm font-medium transition">ውጣ</button>
+    </div>
+  </div>
+  <!-- NAVIGATION TABS -->
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 flex gap-1 overflow-x-auto pb-2 pt-1">
+    <button onclick="switchTab('overview')" id="tab-overview" class="tab-btn px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap bg-sky-500 text-white">📊 አጠቃላይ (Overview)</button>
+    <button onclick="switchTab('orders')" id="tab-orders" class="tab-btn px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap text-slate-400 hover:text-white flex items-center gap-2">
+      <span>🧾 ደረሰኞች (Orders)</span>
+      <span id="navPendingBadge" class="px-2 py-0.5 text-xs rounded-full bg-amber-500 text-slate-950 font-extrabold hidden">0</span>
+    </button>
+    <button onclick="switchTab('users')" id="tab-users" class="tab-btn px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap text-slate-400 hover:text-white">👥 ደንበኞች (Users)</button>
+    <button onclick="switchTab('tools')" id="tab-tools" class="tab-btn px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap text-slate-400 hover:text-white">🛠️ መሳሪያዎች & Broadcast</button>
+  </div>
+</header>
+
+<!-- MAIN CONTENT -->
+<main class="max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 flex-1 space-y-6">
+
+  <!-- TAB 1: OVERVIEW -->
+  <section id="sec-overview" class="space-y-6">
+    <!-- KPI CARDS -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div class="glass rounded-2xl p-5 card-hover">
+        <div class="flex justify-between items-start">
+          <span class="text-slate-400 text-xs font-semibold uppercase tracking-wider">ጠቅላላ ገቢ</span>
+          <span class="text-xl">💰</span>
+        </div>
+        <div id="kpiRev" class="text-2xl sm:text-3xl font-extrabold text-emerald-400 mt-2">0 ብር</div>
+        <div id="kpiTodayRev" class="text-xs text-slate-400 mt-1">ዛሬ፦ 0 ብር (0 ሽያጭ)</div>
+      </div>
+
+      <div onclick="switchTab('orders')" class="glass rounded-2xl p-5 card-hover cursor-pointer border-amber-500/20">
+        <div class="flex justify-between items-start">
+          <span class="text-amber-300/90 text-xs font-semibold uppercase tracking-wider">ያልተረጋገጡ ደረሰኞች</span>
+          <span class="text-xl">⏳</span>
+        </div>
+        <div id="kpiPending" class="text-2xl sm:text-3xl font-extrabold text-amber-400 mt-2">0</div>
+        <div class="text-xs text-amber-300/70 mt-1">ለማረጋገጥ እዚህ ይጫኑ ➔</div>
+      </div>
+
+      <div class="glass rounded-2xl p-5 card-hover">
+        <div class="flex justify-between items-start">
+          <span class="text-slate-400 text-xs font-semibold uppercase tracking-wider">ጠቅላላ ተጠቃሚዎች</span>
+          <span class="text-xl">👥</span>
+        </div>
+        <div id="kpiUsers" class="text-2xl sm:text-3xl font-extrabold text-sky-400 mt-2">0</div>
+        <div id="kpiTodayUsers" class="text-xs text-slate-400 mt-1">ዛሬ የገቡ፦ +0</div>
+      </div>
+
+      <div class="glass rounded-2xl p-5 card-hover">
+        <div class="flex justify-between items-start">
+          <span class="text-slate-400 text-xs font-semibold uppercase tracking-wider">የተሸጡ ጥቅሎች</span>
+          <span class="text-xl">👑</span>
+        </div>
+        <div id="kpiSales" class="text-2xl sm:text-3xl font-extrabold text-indigo-400 mt-2">0</div>
+        <div id="kpiPkgSplit" class="text-xs text-slate-400 mt-1">📕 መጽሐፍ: 0 | 👑 VIP: 0</div>
+      </div>
+    </div>
+
+    <!-- FUNNEL & SOURCES -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="glass rounded-2xl p-6">
+        <h2 class="font-bold text-base mb-4 flex items-center gap-2"><span>📈</span> የደንበኞች ጉዞ (Conversion Funnel)</h2>
+        <div id="funnelBox" class="space-y-3.5"></div>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <h2 class="font-bold text-base mb-4 flex items-center gap-2"><span>📢</span> የማስታወቂያ ምንጮች (Top Ad Sources)</h2>
+        <div id="sourcesBox" class="space-y-3"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TAB 2: ORDERS -->
+  <section id="sec-orders" class="space-y-4 hidden">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex gap-2">
+        <button onclick="setOrderFilter('pending')" id="of-pending" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-amber-500 text-slate-950">⏳ በመጠባበቅ ላይ</button>
+        <button onclick="setOrderFilter('approved')" id="of-approved" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-slate-800 text-slate-300">✅ የተረጋገጡ</button>
+        <button onclick="setOrderFilter('rejected')" id="of-rejected" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-slate-800 text-slate-300">❌ ውድቅ የተደረጉ</button>
+      </div>
+      <span id="ordersCountText" class="text-xs text-slate-400"></span>
+    </div>
+    <div id="ordersGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5"></div>
+  </section>
+
+  <!-- TAB 3: USERS -->
+  <section id="sec-users" class="space-y-4 hidden">
+    <div class="flex flex-col sm:flex-row gap-3 justify-between">
+      <input id="userSearch" oninput="debounceUsers()" type="text" placeholder="🔎 በስም፣ @username ወይም ID ይፈልጉ..."
+        class="w-full sm:max-w-md px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-sm focus:outline-none focus:border-sky-500">
+      <div class="flex items-center gap-2">
+        <button onclick="changeUserPage(-1)" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold">⬅️ ቀዳሚ</button>
+        <span id="userPageInfo" class="text-xs text-slate-400 px-2">ገጽ 1</span>
+        <button onclick="changeUserPage(1)" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold">ቀጣይ ➡️</button>
+      </div>
+    </div>
+    <div class="glass rounded-2xl overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="w-full text-left border-collapse text-sm">
+          <thead>
+            <tr class="border-b border-slate-800 text-slate-400 text-xs uppercase bg-slate-900/50">
+              <th class="py-3.5 px-4">ደንበኛ</th>
+              <th class="py-3.5 px-4">ሁኔታ / ጥቅል</th>
+              <th class="py-3.5 px-4">प्रोፋይል & ቁመት</th>
+              <th class="py-3.5 px-4">ምንጭ / ቀን</th>
+              <th class="py-3.5 px-4 text-right">እርምጃ (Actions)</th>
+            </tr>
+          </thead>
+          <tbody id="usersTableBody" class="divide-y divide-slate-800/60"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- TAB 4: TOOLS & BROADCAST -->
+  <section id="sec-tools" class="grid grid-cols-1 lg:grid-cols-2 gap-6 hidden">
+    <!-- Broadcast -->
+    <div class="glass rounded-2xl p-6 space-y-4">
+      <h2 class="font-bold text-base flex items-center gap-2"><span>📢</span> የጅምላ መልዕክት መላኪያ (Broadcast)</h2>
+      <p class="text-xs text-slate-400">ከዚህ በታች የሚጽፉት መልዕክት ለመረጡት የደንበኞች ክፍል ወዲያውኑ በቴሌግራም ይላካል።</p>
+      <select id="bcastTarget" class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-sm">
+        <option value="unpaid">🎯 ላልከፈሉ ብቻ (Unpaid Users)</option>
+        <option value="books">📕 መጽሐፍ ብቻ ለገዙ (ለ VIP Upgrade)</option>
+        <option value="all">🌍 ለሁሉም ተጠቃሚዎች (All Users)</option>
+      </select>
+      <textarea id="bcastText" rows="4" placeholder="መልዕክትዎን እዚህ ይጻፉ..." class="w-full p-4 rounded-xl bg-slate-900 border border-slate-700 text-sm focus:outline-none focus:border-sky-500"></textarea>
+      <button onclick="sendBroadcast()" id="bcastBtn" class="w-full py-3 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:opacity-95 font-bold text-sm shadow-lg shadow-sky-500/20">
+        📢 መልዕክቱን ለሁሉም ላክ
+      </button>
+    </div>
+
+    <!-- Quick Tools -->
+    <div class="space-y-6">
+      <!-- Auto SMS Matcher -->
+      <div class="glass rounded-2xl p-6 space-y-3">
+        <h2 class="font-bold text-base flex items-center gap-2"><span>⚡</span> የባንክ SMS ማስገቢያ (Auto-Verify)</h2>
+        <p class="text-xs text-slate-400">ከ CBE ወይም Telebirr የደረሰዎትን የክፍያ SMS እዚህ Paste ያድርጉ፤ ተመሳሳይ ደረሰኝ ካለ ወዲያውኑ በራሱ ያጸድቃል።</p>
+        <textarea id="smsInput" rows="2" placeholder="Dear Fasika, your account has been credited with ETB 597.00..." class="w-full p-3 rounded-xl bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-emerald-500"></textarea>
+        <button onclick="submitSms()" class="w-full py-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 font-bold text-xs">
+          ✅ SMS መዝግብ እና ደረሰኝ አዛምድ
+        </button>
+      </div>
+
+      <!-- Group Motivation & Followup Trigger -->
+      <div class="glass rounded-2xl p-6 space-y-3">
+        <h2 class="font-bold text-base flex items-center gap-2"><span>🔥</span> የግሩፕ ማነቃቂያ እና ክትትል</h2>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+          <button onclick="triggerGroupPost()" class="p-3.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-bold flex items-center justify-center gap-2">
+            🔥 ወደ ግሩፖቹ ማነቃቂያ ፖስት ልቀቅ
+          </button>
+          <button onclick="triggerFollowupNow()" class="p-3.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 text-xs font-bold flex items-center justify-center gap-2">
+            🚀 ላልከፈሉ Follow-up አሁን ላክ
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- IMAGE LIGHTBOX MODAL -->
+<div id="imgModal" onclick="this.classList.add('hidden')" class="fixed inset-0 z-50 bg-black/90 hidden flex items-center justify-center p-4 cursor-zoom-out">
+  <img id="modalImg" src="" class="max-h-[92vh] max-w-[95vw] rounded-2xl shadow-2xl border border-slate-700">
+</div>
+
+<!-- TOAST NOTIFICATION -->
+<div id="toast" class="fixed bottom-5 right-5 z-50 px-5 py-3.5 rounded-2xl glass border border-sky-500/40 text-sm font-semibold shadow-2xl hidden"></div>
+
+<script>
+let currentTab = 'overview';
+let orderFilter = 'pending';
+let userPage = 0;
+let userTimer = null;
+
+function showToast(msg, isErr=false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `fixed bottom-5 right-5 z-50 px-5 py-3.5 rounded-2xl glass text-sm font-semibold shadow-2xl ${isErr ? 'border-rose-500/60 text-rose-300' : 'border-emerald-500/60 text-emerald-300'}`;
+  t.classList.remove('hidden');
+  setTimeout(() => t.classList.add('hidden'), 3500);
+}
+
+async function api(path, opts={}) {
+  const res = await fetch(path, opts);
+  if (res.status === 401) {
+    document.getElementById('loginScreen').classList.remove('hidden');
+    throw new Error('Unauthorized');
+  }
+  return res.json();
+}
+
+async function doLogin(e) {
+  e.preventDefault();
+  const password = document.getElementById('passInput').value;
+  const res = await fetch('/api/login', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({password})
+  });
+  if (res.ok) {
+    document.getElementById('loginScreen').classList.add('hidden');
+    document.getElementById('loginErr').classList.add('hidden');
+    loadAll();
+  } else {
+    const el = document.getElementById('loginErr');
+    el.textContent = '❌ ፓስዎርድ ትክክል አይደለም!';
+    el.classList.remove('hidden');
+  }
+}
+
+async function doLogout() {
+  await fetch('/api/logout', {method: 'POST'});
+  location.reload();
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  ['overview', 'orders', 'users', 'tools'].forEach(t => {
+    document.getElementById(`sec-${t}`).classList.toggle('hidden', t !== tab);
+    const btn = document.getElementById(`tab-${t}`);
+    if (t === tab) {
+      btn.className = 'tab-btn px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap bg-sky-500 text-white flex items-center gap-2';
+    } else {
+      btn.className = 'tab-btn px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap text-slate-400 hover:text-white flex items-center gap-2';
+    }
+  });
+  if (tab === 'orders') loadOrders();
+  if (tab === 'users') loadUsers();
+}
+
+async function loadStats() {
+  const d = await api('/api/stats');
+  document.getElementById('botName').textContent = d.bot_name;
+  document.getElementById('botUser').textContent = d.bot_username ? '@' + d.bot_username : 'Telegram Bot';
+  document.getElementById('kpiRev').textContent = d.total_rev.toLocaleString() + ' ብር';
+  document.getElementById('kpiTodayRev').textContent = `ዛሬ፦ ${d.today_rev.toLocaleString()} ብር (${d.today_sales} ሽያጭ)`;
+  document.getElementById('kpiPending').textContent = d.pending_orders;
+  document.getElementById('kpiUsers').textContent = d.total_users.toLocaleString();
+  document.getElementById('kpiTodayUsers').textContent = `ዛሬ የገቡ፦ +${d.today_users} | ብሎክ፦ ${d.blocked_users}`;
+  document.getElementById('kpiSales').textContent = d.total_sales.toLocaleString();
+  document.getElementById('kpiPkgSplit').textContent = `📕 መጽሐፍ: ${d.books_sales} | 👑 VIP: ${d.bundle_sales} | 🎁 Ref: ${d.referrals}`;
+
+  const badge = document.getElementById('navPendingBadge');
+  badge.textContent = d.pending_orders;
+  badge.classList.toggle('hidden', d.pending_orders === 0);
+
+  // Funnel
+  const maxF = Math.max(1, d.total_users);
+  const fItems = [
+    ['🏁 ጥያቄ የጀመሩ', d.funnel.q, 'bg-sky-500'],
+    ['🧬 ውጤት ያዩ (Result)', d.funnel.res, 'bg-indigo-500'],
+    ['🎥 ቪዲዮ/ምስክርነት ያዩ', d.funnel.vid, 'bg-purple-500'],
+    ['📦 ጥቅል መምረጫ የደረሱ', d.funnel.pkg, 'bg-amber-500'],
+    ['💳 ክፍያ ገጽ የደረሱ', d.funnel.pay, 'bg-emerald-500'],
+  ];
+  document.getElementById('funnelBox').innerHTML = fItems.map(([label, val, col]) => {
+    const pct = Math.min(100, Math.round((val / maxF) * 100));
+    return `<div>
+      <div class="flex justify-between text-xs mb-1"><span class="text-slate-300 font-medium">${label}</span><span class="font-bold text-slate-200">${val} (${pct}%)</span></div>
+      <div class="w-full h-2 rounded-full bg-slate-800 overflow-hidden"><div class="h-full ${col}" style="width:${pct}%"></div></div>
+    </div>`;
+  }).join('');
+
+  // Sources
+  document.getElementById('sourcesBox').innerHTML = d.sources.map(s => `
+    <div class="flex items-center justify-between p-3 rounded-xl bg-slate-900/60 border border-slate-800">
+      <div>
+        <div class="font-semibold text-sm text-white">${s.src}</div>
+        <div class="text-xs text-slate-400">${s.users} ተጠቃሚዎች</div>
+      </div>
+      <div class="text-right">
+        <div class="font-bold text-sm text-emerald-400">${s.rev.toLocaleString()} ብር</div>
+        <div class="text-xs text-slate-400">${s.sales} ሽያጭ</div>
+      </div>
+    </div>
+  `).join('') || '<p class="text-xs text-slate-500">ምንም መረጃ የለም</p>';
+}
+
+function setOrderFilter(f) {
+  orderFilter = f;
+  ['pending', 'approved', 'rejected'].forEach(k => {
+    const b = document.getElementById(`of-${k}`);
+    if (k === f) {
+      b.className = 'px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-sky-500 text-white';
+    } else {
+      b.className = 'px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-slate-800 text-slate-300';
+    }
+  });
+  loadOrders();
+}
+
+function openImg(url) {
+  document.getElementById('modalImg').src = url;
+  document.getElementById('imgModal').classList.remove('hidden');
+}
+
+async function loadOrders() {
+  const d = await api(`/api/orders?status=${orderFilter}`);
+  document.getElementById('ordersCountText').textContent = `${d.orders.length} ትዕዛዞች`;
+  const grid = document.getElementById('ordersGrid');
+  if (!d.orders.length) {
+    grid.innerHTML = `<div class="col-span-full glass rounded-2xl p-12 text-center text-slate-400">✨ በዚህ ክፍል ምንም ደረሰኝ የለም።</div>`;
+    return;
+  }
+  grid.innerHTML = d.orders.map(o => `
+    <div class="glass rounded-2xl overflow-hidden flex flex-col justify-between border border-slate-800">
+      <div>
+        <div class="relative bg-slate-950 h-60 flex items-center justify-center overflow-hidden group cursor-zoom-in" onclick="openImg('/api/order_photo/${o.id}')">
+          <img src="/api/order_photo/${o.id}" loading="lazy" class="object-contain h-full w-full group-hover:scale-105 transition">
+          <span class="absolute top-3 left-3 px-2.5 py-1 rounded-lg bg-black/70 text-xs font-bold text-white">#${o.id}</span>
+          <span class="absolute top-3 right-3 px-2.5 py-1 rounded-lg bg-sky-500/90 text-xs font-extrabold text-white">${o.price} ብር</span>
+        </div>
+        <div class="p-4 space-y-2">
+          <div class="flex items-center justify-between">
+            <div class="font-bold text-base text-white truncate">${o.user_name}</div>
+            <span class="text-xs text-slate-400">ID: ${o.user_id}</span>
+          </div>
+          <div class="text-xs font-semibold text-sky-400">${o.pkg_label}</div>
+          ${o.note ? `<div class="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs text-slate-300 whitespace-pre-line">${o.note}</div>` : ''}
+          <div class="text-[11px] text-slate-500">🕒 ${o.created} ${o.username ? '· @'+o.username : ''}</div>
+        </div>
+      </div>
+      ${o.status === 'pending' ? `
+      <div class="p-4 pt-0 space-y-2">
+        <div class="grid grid-cols-2 gap-2">
+          <button onclick="orderAction(${o.id}, 'approve')" class="py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs transition">✅ አረጋግጥ (Approve)</button>
+          <button onclick="orderAction(${o.id}, 'reject')" class="py-2.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 font-bold text-xs transition">❌ ውድቅ (Reject)</button>
+        </div>
+        <div class="grid grid-cols-3 gap-1.5">
+          <button onclick="orderAction(${o.id}, 'wait')" class="py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-300">⏳ ጠብቅ</button>
+          <button onclick="orderAction(${o.id}, 'blur')" class="py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-300">🔍 አይታይም</button>
+          <button onclick="orderAction(${o.id}, 'less')" class="py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-300">💰 ቀሪ ብር</button>
+        </div>
+      </div>` : `
+      <div class="p-4 pt-0">
+        <button onclick="orderAction(${o.id}, 'resend')" class="w-full py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-sky-300">🔗 አዲስ የግሩፕ ሊንክ ላክ</button>
+      </div>`}
+    </div>
+  `).join('');
+}
+
+async function orderAction(id, action) {
+  const r = await api(`/api/orders/${id}/action`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action})
+  });
+  showToast(r.message, !r.ok);
+  loadStats();
+  loadOrders();
+}
+
+function debounceUsers() {
+  clearTimeout(userTimer);
+  userTimer = setTimeout(() => { userPage = 0; loadUsers(); }, 300);
+}
+
+function changeUserPage(dir) {
+  userPage = Math.max(0, userPage + dir);
+  loadUsers();
+}
+
+async function loadUsers() {
+  const q = encodeURIComponent(document.getElementById('userSearch').value.trim());
+  const d = await api(`/api/users?q=${q}&page=${userPage}`);
+  document.getElementById('userPageInfo').textContent = `ገጽ ${d.page + 1} / ${d.total_pages} (${d.total} ሰዎች)`;
+  const tbody = document.getElementById('usersTableBody');
+  tbody.innerHTML = d.users.map(u => {
+    const badge = u.pkg === 'bundle'
+      ? '<span class="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">👑 VIP Group</span>'
+      : (u.pkg === 'books'
+        ? '<span class="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">📕 Books Group</span>'
+        : '<span class="px-2.5 py-1 rounded-full text-xs bg-slate-800 text-slate-400">አልገዛም</span>');
+    return `<tr class="hover:bg-slate-900/40">
+      <td class="py-3.5 px-4">
+        <div class="font-bold text-white">${u.name || '—'}</div>
+        <div class="text-xs text-slate-400">ID: ${u.user_id} ${u.username ? '· @'+u.username : ''}</div>
+      </td>
+      <td class="py-3.5 px-4">${badge}</td>
+      <td class="py-3.5 px-4 text-xs text-slate-300">
+        <div>📏 ${u.height_prog}</div>
+        <div class="text-slate-400">🔥 Streak: ${u.streak} ቀን · 🎁 Ref: ${u.refs}</div>
+      </td>
+      <td class="py-3.5 px-4 text-xs text-slate-400">
+        <div class="text-slate-300">${u.ad_source || 'ቀጥታ'}</div>
+        <div>${u.created}</div>
+      </td>
+      <td class="py-3.5 px-4 text-right space-x-1 whitespace-nowrap">
+        <button onclick="grantUser(${u.user_id}, 'books')" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-emerald-300" title="መጽሐፍ ግሩፕ ስጥ">+📕</button>
+        <button onclick="grantUser(${u.user_id}, 'bundle')" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-amber-300" title="VIP ግሩፕ ስጥ">+👑</button>
+        <button onclick="msgUser(${u.user_id}, '${(u.name||'').replace(/'/g, '')}')" class="px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 text-xs font-semibold text-sky-300">💬 መልዕክት</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function grantUser(uid, pkg) {
+  if (!confirm(`ለዚህ ደንበኛ (${uid}) የ ${pkg.toUpperCase()} ግሩፕ መግቢያ ሊንክ በነፃ ይላክለት?`)) return;
+  const r = await api('/api/users/grant', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({user_id: uid, package: pkg})
+  });
+  showToast(r.message, !r.ok);
+  loadUsers();
+  loadStats();
+}
+
+async function msgUser(uid, name) {
+  const text = prompt(`ለ ${name} (ID: ${uid}) የሚላክ መልዕክት ይጻፉ፦`);
+  if (!text || !text.trim()) return;
+  const r = await api('/api/users/message', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({user_id: uid, text})
+  });
+  showToast(r.message, !r.ok);
+}
+
+async function sendBroadcast() {
+  const target = document.getElementById('bcastTarget').value;
+  const text = document.getElementById('bcastText').value.trim();
+  if (!text) return showToast('እባክዎ መልዕክት ይጻፉ!', true);
+  if (!confirm('ይህ መልዕክት ለተመረጡት ደንበኞች በሙሉ ይላክ?')) return;
+  const r = await api('/api/broadcast', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({target, text})
+  });
+  showToast(r.message, !r.ok);
+  if (r.ok) document.getElementById('bcastText').value = '';
+}
+
+async function submitSms() {
+  const text = document.getElementById('smsInput').value.trim();
+  if (!text) return showToast('እባክዎ የSMS ጽሑፉን ያስገቡ!', true);
+  const r = await api('/api/sms', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text})
+  });
+  showToast(r.message, !r.ok);
+  if (r.ok) {
+    document.getElementById('smsInput').value = '';
+    loadStats();
+  }
+}
+
+async function triggerGroupPost() {
+  const r = await api('/api/postgroup', {method: 'POST'});
+  showToast(r.message, !r.ok);
+}
+
+async function triggerFollowupNow() {
+  const r = await api('/api/followup_now', {method: 'POST'});
+  showToast(r.message, !r.ok);
+}
+
+async function loadAll(toast=false) {
+  try {
+    await loadStats();
+    if (currentTab === 'orders') await loadOrders();
+    if (currentTab === 'users') await loadUsers();
+    if (toast) showToast('✅ ዳሽቦርዱ ታድሷል!');
+  } catch (e) {}
+}
+
+loadAll();
+setInterval(() => loadAll(false), 20000);
+</script>
+</body>
+</html>
+"""
+
+
+async def web_index(request: web.Request):
+    return web.Response(text=DASHBOARD_HTML, content_type="text/html")
+
+
+async def web_login(request: web.Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    pw = str(data.get("password", "")).strip()
+    if hmac.compare_digest(pw, DASHBOARD_PASS):
+        resp = web.json_response({"ok": True})
+        resp.set_cookie("adm_session", _dash_token(), max_age=86400 * 30, httponly=True, samesite="Lax")
+        return resp
+    return web.json_response({"ok": False, "error": "Invalid password"}, status=401)
+
+
+async def web_logout(request: web.Request):
+    resp = web.json_response({"ok": True})
+    resp.del_cookie("adm_session")
+    return resp
+
+
+async def web_stats(request: web.Request):
+    if not _is_authed(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    total_u = fetch("SELECT COUNT(*) AS n FROM users")[0]["n"]
+    today_u = fetch("SELECT COUNT(*) AS n FROM users WHERE date(created)=date('now')")[0]["n"]
+    blocked_u = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(bot_blocked,0)=1")[0]["n"]
+    pending_o = fetch("SELECT COUNT(*) AS n FROM orders WHERE status='pending'")[0]["n"]
+    approved_o = fetch("SELECT COUNT(*) AS n, COALESCE(SUM(price),0) AS rev FROM orders WHERE status='approved'")[0]
+    today_o = fetch("SELECT COUNT(*) AS n, COALESCE(SUM(price),0) AS rev FROM orders WHERE status='approved' AND date(created)=date('now')")[0]
+    books_cnt = fetch("SELECT COUNT(*) AS n FROM orders WHERE status='approved' AND package='books'")[0]["n"]
+    bundle_cnt = fetch("SELECT COUNT(*) AS n FROM orders WHERE status='approved' AND package IN ('bundle','upgrade')")[0]["n"]
+    refs_cnt = fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(ref_credited,0)=1")[0]["n"]
+
+    funnel = {
+        "q": fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 1")[0]["n"],
+        "res": fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 2")[0]["n"],
+        "vid": fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 3")[0]["n"],
+        "pkg": fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 4")[0]["n"],
+        "pay": fetch("SELECT COUNT(*) AS n FROM users WHERE COALESCE(max_funnel,0) >= 5")[0]["n"],
+    }
+    src_rows = fetch(
+        """
+        SELECT COALESCE(u.ad_source, 'ቀጥታ (Direct)') AS src, COUNT(DISTINCT u.user_id) AS u_cnt,
+               COUNT(o.id) AS o_cnt, COALESCE(SUM(o.price), 0) AS rev
+        FROM users u LEFT JOIN orders o ON o.user_id = u.user_id AND o.status = 'approved'
+        GROUP BY COALESCE(u.ad_source, 'ቀጥታ (Direct)') ORDER BY rev DESC, u_cnt DESC LIMIT 6
+        """
+    )
+    return web.json_response(
+        {
+            "bot_name": config.BOT_NAME,
+            "bot_username": BOT_USERNAME,
+            "total_users": total_u,
+            "today_users": today_u,
+            "blocked_users": blocked_u,
+            "pending_orders": pending_o,
+            "total_sales": approved_o["n"],
+            "total_rev": approved_o["rev"],
+            "today_sales": today_o["n"],
+            "today_rev": today_o["rev"],
+            "books_sales": books_cnt,
+            "bundle_sales": bundle_cnt,
+            "referrals": refs_cnt,
+            "funnel": funnel,
+            "sources": [{"src": r["src"], "users": r["u_cnt"], "sales": r["o_cnt"], "rev": r["rev"]} for r in src_rows],
+        }
+    )
+
+
+async def web_orders(request: web.Request):
+    if not _is_authed(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    status = request.query.get("status", "pending")
+    rows = fetch(
+        """
+        SELECT o.id, o.user_id, o.package, o.price, o.status, o.note, o.created,
+               u.name AS user_name, u.username
+        FROM orders o LEFT JOIN users u ON u.user_id = o.user_id
+        WHERE o.status = ? ORDER BY o.id DESC LIMIT 60
+        """,
+        (status,),
+    )
+    return web.json_response(
+        {
+            "orders": [
+                {
+                    "id": r["id"],
+                    "user_id": r["user_id"],
+                    "user_name": r["user_name"] or str(r["user_id"]),
+                    "username": r["username"] or "",
+                    "package": r["package"],
+                    "pkg_label": PKG_LABEL.get(r["package"], r["package"]),
+                    "price": r["price"],
+                    "status": r["status"],
+                    "note": r["note"] or "",
+                    "created": r["created"],
+                }
+                for r in rows
+            ]
+        }
+    )
+
+
+async def web_order_photo(request: web.Request):
+    if not _is_authed(request):
+        return web.Response(status=401)
+    oid = int(request.match_info["id"])
+    rows = fetch("SELECT photo_file_id, photo_thumb FROM orders WHERE id=?", (oid,))
+    if not rows:
+        return web.Response(status=404)
+    fid = rows[0]["photo_file_id"] or ""
+    bot = request.app["bot"]
+    if fid:
+        try:
+            f = await bot.get_file(fid[4:] if fid.startswith("doc:") else fid)
+            data = bytes(await f.download_as_bytearray())
+            return web.Response(body=data, content_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+        except Exception:
+            pass
+    return web.Response(status=404)
+
+
+async def web_order_action(request: web.Request):
+    if not _is_authed(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    oid = int(request.match_info["id"])
+    data = await request.json()
+    action = data.get("action")
+    bot = request.app["bot"]
+
+    if action in ("approve", "reject"):
+        ok, msg = await decide_order(bot, oid, action)
+        return web.json_response({"ok": ok, "message": msg})
+    if action in ("wait", "blur", "less"):
+        ok, msg = await do_quick_reply(bot, oid, action)
+        return web.json_response({"ok": ok, "message": msg})
+    if action == "resend":
+        rows = fetch("SELECT * FROM orders WHERE id=?", (oid,))
+        if not rows:
+            return web.json_response({"ok": False, "message": "ትዕዛዙ አልተገኘም"})
+        ok, info = await send_invite(bot, dict(rows[0]))
+        return web.json_response({"ok": ok, "message": "✅ አዲስ ሊንክ ተልኳል!" if ok else f"⚠️ {info}"})
+    return web.json_response({"ok": False, "message": "Unknown action"})
+
+
+async def web_users(request: web.Request):
+    if not _is_authed(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    q = request.query.get("q", "").strip().lstrip("@")
+    page = max(0, int(request.query.get("page", "0") or 0))
+    limit, offset = 20, page * 20
+
+    if q:
+        like = f"%{q}%"
+        total = fetch("SELECT COUNT(*) AS n FROM users WHERE name LIKE ? OR username LIKE ? OR CAST(user_id AS TEXT) LIKE ?", (like, like, like))[0]["n"]
+        rows = fetch(
+            "SELECT * FROM users WHERE name LIKE ? OR username LIKE ? OR CAST(user_id AS TEXT) LIKE ? ORDER BY user_id DESC LIMIT ? OFFSET ?",
+            (like, like, like, limit, offset),
+        )
+    else:
+        total = fetch("SELECT COUNT(*) AS n FROM users")[0]["n"]
+        rows = fetch("SELECT * FROM users ORDER BY user_id DESC LIMIT ? OFFSET ?", (limit, offset))
+
+    users_list = []
+    for u in rows:
+        uid = u["user_id"]
+        users_list.append(
+            {
+                "user_id": uid,
+                "name": u["name"],
+                "username": u["username"] or "",
+                "pkg": user_best_package(uid),
+                "height_prog": format_height_progress(uid, "am"),
+                "streak": u["streak_count"] or 0,
+                "refs": u["ref_paid_count"] or 0,
+                "ad_source": u["ad_source"] or "ቀጥታ",
+                "created": (u["created"] or "")[:10],
+            }
+        )
+    return web.json_response({"users": users_list, "total": total, "page": page, "total_pages": max(1, (total + limit - 1) // limit)})
+
+
+async def web_user_grant(request: web.Request):
+    if not _is_authed(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    data = await request.json()
+    uid = int(data["user_id"])
+    pkg = data["package"]
+    if pkg not in ("books", "bundle"):
+        return web.json_response({"ok": False, "message": "Invalid package"})
+    order_id = execute("INSERT INTO orders(user_id, package, price, status) VALUES(?,?,0,'approved')", (uid, pkg))
+    order = dict(fetch("SELECT * FROM orders WHERE id=?", (order_id,))[0])
+    ok, info = await deliver_approved_order(request.app["bot"], order)
+    return web.json_response({"ok": ok, "message": "✅ የግሩፕ መግቢያ ሊንኩ ለደንበኛው ተልኳል!" if ok else f"⚠️ {info}"})
+
+
+async def web_user_message(request: web.Request):
+    if not _is_authed(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    data = await request.json()
+    uid = int(data["user_id"])
+    text = (data.get("text") or "").strip()
+    if not text:
+        return web.json_response({"ok": False, "message": "ባዶ መልዕክት"})
+    try:
+        await request.app["bot"].send_message(uid, f"{T[get_lang(uid)]['reply_prefix']}\n{text}")
+        return web.json_response({"ok": True, "message": "✅ መልዕክቱ ለደንበኛው ተልኳል!"})
+    except Exception as e:
+        return web.json_response({"ok": False, "message": f"❌ መላክ አልተቻለም፦ {e}"})
+
+
+async def web_broadcast(request: web.Request):
+    if not _is_authed(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    data = await request.json()
+    target = data.get("target", "unpaid")
+    text = (data.get("text") or "").strip()
+    if not text:
+        return web.json_response({"ok": False, "message": "ባዶ መልዕክት"})
+    if target == "unpaid":
+        rows = fetch("SELECT user_id FROM users u WHERE COALESCE(bot_blocked,0)=0 AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id=u.user_id AND o.status='approved')")
+    elif target == "books":
+        rows = fetch("SELECT DISTINCT user_id FROM orders WHERE status='approved' AND package='books' AND user_id NOT IN (SELECT user_id FROM orders WHERE status='approved' AND package IN ('bundle','upgrade'))")
+    else:
+        rows = fetch("SELECT user_id FROM users WHERE COALESCE(bot_blocked,0)=0")
+
+    bot = request.app["bot"]
+
+    async def _run_bcast():
+        sent = blocked = 0
+        for r in rows:
+            try:
+                await bot.send_message(r["user_id"], text)
+                sent += 1
+                await asyncio.sleep(0.05)
+            except Forbidden:
+                blocked += 1
+                execute("UPDATE users SET bot_blocked=1 WHERE user_id=?", (r["user_id"],))
+            except Exception:
+                pass
+        try:
+            await bot.send_message(ADMIN_ID, f"✅ Web Broadcast ተጠናቀቀ! የደረሳቸው፦ {sent} | ብሎክ፦ {blocked}")
+        except Exception:
+            pass
+
+    t = asyncio.create_task(_run_bcast())
+    _TASKS.add(t)
+    t.add_done_callback(_TASKS.discard)
+    return web.json_response({"ok": True, "message": f"🚀 ለ {len(rows)} ደንበኞች በጀርባ መላክ ተጀምሯል!"})
+
+
+async def web_sms(request: web.Request):
+    if not _is_authed(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    data = await request.json()
+    raw = (data.get("text") or "").strip()
+    added = register_sms_text(raw)
+    if added:
+        await try_match_pending_with_sms(request.app["bot"])
+        return web.json_response({"ok": True, "message": f"✅ ተመዝግቧል፦ {', '.join(added)}"})
+    return web.json_response({"ok": False, "message": "⚠️ የግብይት ቁጥር (TxID) አልተገኘም።"})
+
+
+async def web_postgroup(request: web.Request):
+    if not _is_authed(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    sent = await post_motivation_to_groups(request.app["bot"])
+    return web.json_response({"ok": bool(sent), "message": f"✅ ወደ {sent} ግሩፕ(ዎች) ተለቋል!" if sent else "⚠️ ምንም ግሩፕ አልተገኘም።"})
+
+
+async def web_followup_now(request: web.Request):
+    if not _is_authed(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    immediate_start = time.time() - (FOLLOWUP_HOURS[0] * 3600) - 10
+    execute("UPDATE users SET started_at=?, followup_stage=0 WHERE COALESCE(bot_blocked,0)=0 AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id=users.user_id AND o.status IN ('pending','approved'))", (immediate_start,))
+    t = asyncio.create_task(check_followups(request.app["bot"]))
+    _TASKS.add(t)
+    t.add_done_callback(_TASKS.discard)
+    return web.json_response({"ok": True, "message": "🚀 ላልከፈሉ ደንበኞች የማስታወሻ መልዕክት መላክ ተጀመረ!"})
+
+
+async def web_backup(request: web.Request):
+    if not _is_authed(request):
+        return web.Response(status=401, text="Unauthorized")
+    if not DB_PATH.exists():
+        return web.Response(status=404, text="Database file not found")
+    return web.FileResponse(
+        DB_PATH,
+        headers={"Content-Disposition": f'attachment; filename="bot_backup_{int(time.time())}.db"'},
+    )
+
+
+async def start_web_server(bot):
+    wapp = web.Application()
+    wapp["bot"] = bot
+    wapp.router.add_get("/", web_index)
+    wapp.router.add_post("/api/login", web_login)
+    wapp.router.add_post("/api/logout", web_logout)
+    wapp.router.add_get("/api/stats", web_stats)
+    wapp.router.add_get("/api/orders", web_orders)
+    wapp.router.add_get("/api/order_photo/{id:\\d+}", web_order_photo)
+    wapp.router.add_post("/api/orders/{id:\\d+}/action", web_order_action)
+    wapp.router.add_get("/api/users", web_users)
+    wapp.router.add_post("/api/users/grant", web_user_grant)
+    wapp.router.add_post("/api/users/message", web_user_message)
+    wapp.router.add_post("/api/broadcast", web_broadcast)
+    wapp.router.add_post("/api/sms", web_sms)
+    wapp.router.add_post("/api/postgroup", web_postgroup)
+    wapp.router.add_post("/api/followup_now", web_followup_now)
+    wapp.router.add_get("/api/backup", web_backup)
+
+    runner = web.AppRunner(wapp)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    log.info("🌐 Web Admin Dashboard started on port %s", PORT)
+    return runner
 
 
 # ---------------------------------------------------------------- Background tasks
@@ -1971,13 +2704,12 @@ async def post_init(app):
         await app.bot.set_my_commands(user_cmds)
         await app.bot.set_my_commands(
             user_cmds + [
+                BotCommand("admin", "🎛 የአድሚን ዳሽቦርድ (Web & Bot)"),
                 BotCommand("pending", "⏳ ያልተረጋገጡ ደረሰኞች"),
                 BotCommand("postgroup", "🔥 ወደ ግሩፖቹ ማነቃቂያ ፖስት ልቀቅ"),
                 BotCommand("find", "🔎 ደንበኛ መፈለጊያ"),
-                BotCommand("stats", "📊 ስታቲስቲክስ"),
                 BotCommand("users", "👥 ተጠቃሚዎች"),
                 BotCommand("broadcast", "📢 ጅምላ መልዕክት"),
-                BotCommand("addpromo", "🎟️ ቅናሽ ኮድ"),
                 BotCommand("backup", "💾 ባክአፕ"),
                 BotCommand("sms", "⚡ የባንክ SMS መዝግብ"),
                 BotCommand("resend", "🔗 የግሩፕ ሊንክ"),
@@ -1992,6 +2724,7 @@ async def post_init(app):
             await app.bot.send_message(ADMIN_ID, "\n\n".join(warns))
         except Exception:
             pass
+    app.bot_data["web_runner"] = await start_web_server(app.bot)
     app.bot_data["bg"] = asyncio.create_task(background_loop(app.bot))
 
 
@@ -2005,34 +2738,28 @@ def main():
     app.add_error_handler(on_error)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("refer", cmd_refer))
+    app.add_handler(CommandHandler(["admin", "panel", "stats"], cmd_admin))
     app.add_handler(CommandHandler("postgroup", cmd_postgroup))
     app.add_handler(CommandHandler("find", cmd_find))
-    app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("users", cmd_users))
-    app.add_handler(CommandHandler("test_followup", cmd_test_followup))
     app.add_handler(CommandHandler("pending", cmd_pending))
     app.add_handler(CommandHandler("resend", cmd_resend))
     app.add_handler(CommandHandler("sms", cmd_sms))
-    app.add_handler(CommandHandler("addpromo", cmd_addpromo))
-    app.add_handler(CommandHandler("delpromo", cmd_delpromo))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(ChatJoinRequestHandler(on_join_request))
     app.add_handler(CallbackQueryHandler(on_go, pattern=r"^go:"))
     app.add_handler(CallbackQueryHandler(on_vip_action, pattern=r"^vip:"))
-    app.add_handler(CallbackQueryHandler(on_gift_redeem_btn, pattern=r"^gift:redeem$"))
     app.add_handler(CallbackQueryHandler(on_lang, pattern=r"^lang:"))
     app.add_handler(CallbackQueryHandler(on_profile_answer, pattern=r"^(age|gender|height):"))
     app.add_handler(CallbackQueryHandler(on_package, pattern=r"^pkg:"))
-    app.add_handler(CallbackQueryHandler(on_promo_btn, pattern=r"^promo:ask$"))
     app.add_handler(CallbackQueryHandler(on_faq, pattern=r"^faq:"))
     app.add_handler(CallbackQueryHandler(on_send_testi_btn, pattern=r"^testi:send$"))
+    app.add_handler(CallbackQueryHandler(on_admin_dash, pattern=r"^adm:"))
     app.add_handler(CallbackQueryHandler(on_admin_decision, pattern=r"^(approve|reject):\d+$"))
     app.add_handler(CallbackQueryHandler(on_admin_quick_reply, pattern=r"^qrep:(wait|blur|less):\d+$"))
     app.add_handler(CallbackQueryHandler(on_admin_grant, pattern=r"^admgrant:(books|bundle):\d+$"))
     app.add_handler(CallbackQueryHandler(on_users_page, pattern=r"^(uopen|upage):\d+$"))
-    app.add_handler(CallbackQueryHandler(on_followup_page, pattern=r"^fpage:\d+$"))
-    app.add_handler(CallbackQueryHandler(on_followup_test_btn, pattern=r"^fnow:"))
     app.add_handler(CallbackQueryHandler(on_broadcast_btn, pattern=r"^bcast:"))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, on_photo))
     app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & filters.User(user_id=ADMIN_ID) & ~filters.COMMAND, on_admin_reply))
