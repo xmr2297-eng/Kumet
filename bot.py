@@ -71,7 +71,6 @@ DB_WARN = None if DB_PATH_SET else "⚠️ DB_PATH አልተሞላም፤ Railway
 MAX_PENDING_PER_USER = getattr(config, "MAX_PENDING_PER_USER", 3)
 COACH_DAYS = getattr(config, "COACH_DAYS", (3, 7, 15, 30))
 BACKUP_INTERVAL_HOURS = getattr(config, "BACKUP_INTERVAL_HOURS", 24)
-GROUP_POST_HOURS = getattr(config, "GROUP_POST_HOURS", 8)
 FAST_BONUS_HOURS = getattr(config, "FAST_BONUS_HOURS", 24)
 FOLLOWUP_HOURS = getattr(config, "FOLLOWUP_HOURS", (0.25, 6.0, 24.0))
 FOLLOWUP_RESET_HOURS = getattr(config, "FOLLOWUP_RESET_HOURS", 48.0)
@@ -80,20 +79,11 @@ ETH_TZ = timezone(timedelta(hours=3))
 
 BOT_USERNAME = ""
 LAST_BACKUP_TS = 0.0
-LAST_GROUP_POST_TS = 0.0
-GROUP_POST_IDX = 0
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 log = logging.getLogger("bookbot")
 for _noisy in ("httpx", "httpcore", "aiohttp.access"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
-
-GROUP_MOTIVATION_POSTS = getattr(_texts_mod, "GROUP_MOTIVATION_POSTS", None) or [
-    "🔥 **የዕለቱ የቁመት እድገት ማስታወሻ!**\n\nዛሬ የመወጠር (Stretching) ልምምድዎን ሰርተዋል? አከርካሪዎ በየቀኑ በትክክለኛ ልምምድ ሲሳብ ለውጡ በሳምንታት ውስጥ መታየት ይጀምራል!\n\n👇 የዛሬውን ልምምድ ከጨረሱ ወይም ቁመትዎን ለመመዝገብ ከታች ያለውን አዝራር ይጫኑ፦",
-    "😴 **የእንቅልፍ እና የዕድገት ሆርሞን (HGH) ምስጢር!**\n\nሰውነታችን ከ 75% በላይ የሚሆነውን የዕድገት ሆርሞን የሚያመርተው ማታ በጥልቅ እንቅልፍ ወቅት ነው። ከመተኛትዎ በፊት ለ 5 ደቂቃ የአከርካሪ ማሳሳቢያ ልምምድ ሰርተው በጊዜ ይተኙ!\n\n👇 የዛሬውን ተከታታይ ልምምድዎን (Streak) አሁኑኑ ያስመዝግቡ፦",
-    "🥗 **አመጋገብ + ውሃ = ፈጣን የቁመት እድገት!**\n\nየአከርካሪ ዲስኮች በውሃ የተሞሉ ናቸው። በቀን በቂ ውሃ መጠጣት እና ፕሮቲን/ካልሲየም ያላቸው ምግቦችን መመገብ የልምምድዎን ውጤት በእጥፍ ያፈጥነዋል!\n\n👇 ዛሬ ልምምድ የሰሩ ከታች ያለውን አዝራር ይንኩ፦",
-    "🏆 **ስኬት የሚመጣው በተከታታይ ልምምድ (Consistency) ነው!**\n\nትላንት የጀመሩት ትንሽ ልምምድ ነገ ትልቅ የቁመት እና የበራስ መተማመን ለውጥ ያመጣል። አንድም ቀን እንዳያቋርጡ!\n\n👇 የዛሬውን ቼክ-ሊስት እና የቁመት ለውጥዎን ለመመዝገብ ከታች ይጫኑ፦",
-]
 
 FALLBACK_TEXTS = {
     "analysis_young": "አስደናቂ ዜና! በዚህ የእድሜ ክልል የእድገት ፕሌቶችዎ እና የዕድገት ሆርሞን (HGH) ከፍተኛ ንቁ ደረጃ ላይ ይገኛሉ።\n📈 ከ 8 እስከ 12 CM የቁመት መጨመር ከፍተኛ እድል አለዎት!",
@@ -337,7 +327,7 @@ def get_lang(user_id):
     return rows[0]["lang"] if rows and rows[0]["lang"] in T else "am"
 
 
-# ---------------------------------------------------------------- Group Motivation & Deep-Link Helpers
+# ---------------------------------------------------------------- Deep-Link Helpers
 def channel_for(package):
     chans = getattr(config, "CHANNELS", {}) or {}
     return int((chans.get("upgrade") or chans.get("bundle") or 0) if package == "upgrade" else (chans.get(package) or 0))
@@ -351,25 +341,6 @@ def group_deeplink_kb():
             [InlineKeyboardButton("📏 የዛሬ ቁመቴን ልመዝግብ (Height Log)", url=f"https://t.me/{uname}?start=log_h")],
         ]
     )
-
-
-async def post_motivation_to_groups(bot):
-    global LAST_GROUP_POST_TS, GROUP_POST_IDX
-    LAST_GROUP_POST_TS = time.time()
-    if not GROUP_MOTIVATION_POSTS:
-        return 0
-    text = GROUP_MOTIVATION_POSTS[GROUP_POST_IDX % len(GROUP_MOTIVATION_POSTS)]
-    GROUP_POST_IDX += 1
-    kb = group_deeplink_kb()
-    chans = {channel_for("books"), channel_for("bundle")} - {0}
-    sent = 0
-    for cid in chans:
-        try:
-            await bot.send_message(cid, text, reply_markup=kb)
-            sent += 1
-        except Exception:
-            log.warning("could not post motivation to group %s", cid)
-    return sent
 
 
 async def announce_in_user_group(bot, user_id, msg_text):
@@ -1127,10 +1098,9 @@ def build_admin_dashboard():
                 InlineKeyboardButton("👥 ተጠቃሚዎች", callback_data="uopen:0"),
             ],
             [
-                InlineKeyboardButton("🔥 ግሩፕ ፖስት ልቀቅ", callback_data="adm:postgroup"),
                 InlineKeyboardButton("💾 ዳታቤዝ ባክአፕ", callback_data="adm:backup"),
+                InlineKeyboardButton("🔄 አድስ (Refresh)", callback_data="adm:refresh"),
             ],
-            [InlineKeyboardButton("🔄 አድስ (Refresh)", callback_data="adm:refresh")],
         ]
     )
     return text, InlineKeyboardMarkup(rows)
@@ -1163,19 +1133,9 @@ async def on_admin_dash(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         for r in rows[:10]:
             await send_order_to_admin(context.bot, r["id"])
-    elif action == "postgroup":
-        sent = await post_motivation_to_groups(context.bot)
-        await q.answer(f"✅ ወደ {sent} ግሩፕ(ዎች) ተለቋል!" if sent else "⚠️ ምንም ግሩፕ አልተገኘም።", show_alert=True)
     elif action == "backup":
         await q.answer("💾 ባክአፕ በመላክ ላይ...")
         await send_db_backup(context.bot)
-
-
-async def cmd_postgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    sent = await post_motivation_to_groups(context.bot)
-    await update.message.reply_text(f"✅ ወደ {sent} ግሩፕ(ዎች) ተለቋል!" if sent else "⚠️ ምንም ግሩፕ አልተገኘም።")
 
 
 async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1867,14 +1827,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         </button>
       </div>
 
-      <!-- Group Motivation & Followup Trigger -->
+      <!-- Followup Trigger -->
       <div class="glass rounded-2xl p-6 space-y-3">
-        <h2 class="font-bold text-base flex items-center gap-2"><span>🔥</span> የግሩፕ ማነቃቂያ እና ክትትል</h2>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-          <button onclick="triggerGroupPost()" class="p-3.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-bold flex items-center justify-center gap-2">
-            🔥 ወደ ግሩፖቹ ማነቃቂያ ፖስት ልቀቅ
-          </button>
-          <button onclick="triggerFollowupNow()" class="p-3.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 text-xs font-bold flex items-center justify-center gap-2">
+        <h2 class="font-bold text-base flex items-center gap-2"><span>🚀</span> የደንበኞች ክትትል (Follow-up)</h2>
+        <div class="pt-1">
+          <button onclick="triggerFollowupNow()" class="w-full p-3.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 text-xs font-bold flex items-center justify-center gap-2">
             🚀 ላልከፈሉ Follow-up አሁን ላክ
           </button>
         </div>
@@ -2172,11 +2129,6 @@ async function submitSms() {
   }
 }
 
-async function triggerGroupPost() {
-  const r = await api('/api/postgroup', {method: 'POST'});
-  showToast(r.message, !r.ok);
-}
-
 async function triggerFollowupNow() {
   const r = await api('/api/followup_now', {method: 'POST'});
   showToast(r.message, !r.ok);
@@ -2462,13 +2414,6 @@ async def web_sms(request: web.Request):
     return web.json_response({"ok": False, "message": "⚠️ የግብይት ቁጥር (TxID) አልተገኘም።"})
 
 
-async def web_postgroup(request: web.Request):
-    if not _is_authed(request):
-        return web.json_response({"error": "Unauthorized"}, status=401)
-    sent = await post_motivation_to_groups(request.app["bot"])
-    return web.json_response({"ok": bool(sent), "message": f"✅ ወደ {sent} ግሩፕ(ዎች) ተለቋል!" if sent else "⚠️ ምንም ግሩፕ አልተገኘም።"})
-
-
 async def web_followup_now(request: web.Request):
     if not _is_authed(request):
         return web.json_response({"error": "Unauthorized"}, status=401)
@@ -2506,7 +2451,6 @@ async def start_web_server(bot):
     wapp.router.add_post("/api/users/message", web_user_message)
     wapp.router.add_post("/api/broadcast", web_broadcast)
     wapp.router.add_post("/api/sms", web_sms)
-    wapp.router.add_post("/api/postgroup", web_postgroup)
     wapp.router.add_post("/api/followup_now", web_followup_now)
     wapp.router.add_get("/api/backup", web_backup)
 
@@ -2588,16 +2532,14 @@ async def nag_admin(bot):
 
 
 async def background_loop(bot):
-    global LAST_BACKUP_TS, LAST_GROUP_POST_TS
-    LAST_BACKUP_TS = LAST_GROUP_POST_TS = time.time()
+    global LAST_BACKUP_TS
+    LAST_BACKUP_TS = time.time()
     while True:
         try:
             await check_reminders(bot)
             await check_followups(bot)
             await check_coach_messages(bot)
             await nag_admin(bot)
-            if GROUP_POST_HOURS > 0 and (time.time() - LAST_GROUP_POST_TS) >= GROUP_POST_HOURS * 3600:
-                await post_motivation_to_groups(bot)
             if BACKUP_INTERVAL_HOURS > 0 and (time.time() - LAST_BACKUP_TS) >= BACKUP_INTERVAL_HOURS * 3600:
                 await send_db_backup(bot)
         except asyncio.CancelledError:
@@ -2624,7 +2566,6 @@ async def post_init(app):
             user_cmds + [
                 BotCommand("admin", "🎛 የአድሚን ዳሽቦርድ (Web & Bot)"),
                 BotCommand("pending", "⏳ ያልተረጋገጡ ደረሰኞች"),
-                BotCommand("postgroup", "🔥 ወደ ግሩፖቹ ማነቃቂያ ፖስት ልቀቅ"),
                 BotCommand("find", "🔎 ደንበኛ መፈለጊያ"),
                 BotCommand("users", "👥 ተጠቃሚዎች"),
                 BotCommand("broadcast", "📢 ጅምላ መልዕክት"),
@@ -2656,7 +2597,6 @@ def main():
     app.add_error_handler(on_error)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler(["admin", "panel", "stats"], cmd_admin))
-    app.add_handler(CommandHandler("postgroup", cmd_postgroup))
     app.add_handler(CommandHandler("find", cmd_find))
     app.add_handler(CommandHandler("users", cmd_users))
     app.add_handler(CommandHandler("pending", cmd_pending))
